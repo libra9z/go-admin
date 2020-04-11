@@ -18,6 +18,7 @@ import (
 	"github.com/astaxie/beego"
 	"github.com/astaxie/beego/context"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -40,8 +41,8 @@ func (bee *Beego) Use(router interface{}, plugs []plugins.Plugin) error {
 	return bee.GetUse(router, plugs, bee)
 }
 
-func (bee *Beego) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	bee.GetContent(ctx, getPanelFn, bee)
+func (bee *Beego) Content(ctx interface{}, getPanelFn types.GetPanelFn, btns ...types.Button) {
+	bee.GetContent(ctx, getPanelFn, bee, btns)
 }
 
 type HandlerFunc func(ctx *context.Context) (types.Panel, error)
@@ -66,7 +67,7 @@ func (bee *Beego) SetApp(app interface{}) error {
 	return nil
 }
 
-func (bee *Beego) AddHandler(method, path string, plug plugins.Plugin) {
+func (bee *Beego) AddHandler(method, path string, handlers gctx.Handlers) {
 	bee.app.Handlers.AddMethod(method, path, func(c *context.Context) {
 		for key, value := range c.Input.Params() {
 			if c.Request.URL.RawQuery == "" {
@@ -76,7 +77,7 @@ func (bee *Beego) AddHandler(method, path string, plug plugins.Plugin) {
 			}
 		}
 		ctx := gctx.NewContext(c.Request)
-		ctx.SetHandlers(plug.GetHandler(c.Request.URL.Path, strings.ToLower(c.Request.Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			c.ResponseWriter.Header().Add(key, head[0])
 		}
@@ -105,7 +106,7 @@ func (bee *Beego) SetContext(contextInterface interface{}) adapter.WebFrameWork 
 }
 
 func (bee *Beego) Redirect() {
-	bee.ctx.Redirect(http.StatusFound, config.Get().Url("/login"))
+	bee.ctx.Redirect(http.StatusFound, config.Url("/login"))
 }
 
 func (bee *Beego) SetContentType() {
@@ -128,6 +129,11 @@ func (bee *Beego) Method() string {
 	return bee.ctx.Request.Method
 }
 
-func (bee *Beego) PjaxHeader() string {
-	return bee.ctx.Request.Header.Get(constant.PjaxHeader)
+func (bee *Beego) FormParam() url.Values {
+	_ = bee.ctx.Request.ParseMultipartForm(32 << 20)
+	return bee.ctx.Request.PostForm
+}
+
+func (bee *Beego) IsPjax() bool {
+	return bee.ctx.Request.Header.Get(constant.PjaxHeader) == "true"
 }

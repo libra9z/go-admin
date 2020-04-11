@@ -2,6 +2,7 @@ package form
 
 import (
 	"github.com/GoAdminGroup/go-admin/modules/db"
+	"html/template"
 )
 
 type Type uint8
@@ -14,6 +15,7 @@ const (
 	IconPicker
 	SelectBox
 	File
+	Multifile
 	Password
 	RichText
 	Datetime
@@ -29,16 +31,57 @@ const (
 	TextArea
 	Custom
 	Switch
+	Code
 )
+
+var allType = []Type{Default, Text, SelectSingle, Select, IconPicker, SelectBox, File, Multifile, Password,
+	RichText, Datetime, DatetimeRange, Radio, Email, Url, Ip, Color, Currency, Number, NumberRange,
+	TextArea, Custom, Switch, Code}
+
+func CheckType(t, def Type) Type {
+	for _, item := range allType {
+		if t == item {
+			return t
+		}
+	}
+	return def
+}
 
 type Layout uint8
 
 const (
 	LayoutDefault Layout = iota
 	LayoutTwoCol
+	LayoutThreeCol
+	LayoutFourCol
+	LayoutFiveCol
+	LayoutSixCol
 	LayoutFlow
 	LayoutTab
 )
+
+func (l Layout) Col() int {
+	if l == LayoutTwoCol {
+		return 2
+	}
+	if l == LayoutThreeCol {
+		return 3
+	}
+	if l == LayoutFourCol {
+		return 4
+	}
+	if l == LayoutFiveCol {
+		return 5
+	}
+	if l == LayoutSixCol {
+		return 6
+	}
+	return 0
+}
+
+func (l Layout) Flow() bool {
+	return l == LayoutFlow
+}
 
 func (t Type) String() string {
 	switch t {
@@ -56,6 +99,8 @@ func (t Type) String() string {
 		return "selectbox"
 	case File:
 		return "file"
+	case Multifile:
+		return "multi_file"
 	case Password:
 		return "password"
 	case RichText:
@@ -86,6 +131,8 @@ func (t Type) String() string {
 		return "custom"
 	case Switch:
 		return "switch"
+	case Code:
+		return "code"
 	default:
 		panic("wrong form type")
 	}
@@ -93,6 +140,10 @@ func (t Type) String() string {
 
 func (t Type) IsSelect() bool {
 	return t == Select || t == SelectSingle || t == SelectBox || t == Radio || t == Switch
+}
+
+func (t Type) IsSingleSelect() bool {
+	return t == SelectSingle || t == Radio || t == Switch
 }
 
 func (t Type) IsMultiSelect() bool {
@@ -103,14 +154,26 @@ func (t Type) IsRange() bool {
 	return t == DatetimeRange || t == NumberRange
 }
 
-func (t Type) SelectedLabel() []string {
+func (t Type) IsFile() bool {
+	return t == File || t == Multifile
+}
+
+func (t Type) IsCode() bool {
+	return t == Code
+}
+
+func (t Type) IsCustom() bool {
+	return t == Custom
+}
+
+func (t Type) SelectedLabel() []template.HTML {
 	if t == Select || t == SelectSingle || t == SelectBox {
-		return []string{"selected", ""}
+		return []template.HTML{"selected", ""}
 	}
 	if t == Radio || t == Switch {
-		return []string{"checked", ""}
+		return []template.HTML{"checked", ""}
 	}
-	return []string{}
+	return []template.HTML{"", ""}
 }
 
 func GetFormTypeFromFieldType(typeName db.DatabaseType, fieldName string) string {
@@ -154,4 +217,13 @@ func GetFormTypeFromFieldType(typeName db.DatabaseType, fieldName string) string
 	}
 
 	return "form.Text"
+}
+
+func DefaultHTML(value string) template.HTML {
+	return template.HTML(`<div class="box box-solid box-default no-margin"><div class="box-body" style="min-height: 40px;">` +
+		value + `</div></div>`)
+}
+
+func HiddenInputHTML(field, value string) template.HTML {
+	return template.HTML(`<input type="hidden" name="` + field + `" value="` + value + `" class="form-control">`)
 }

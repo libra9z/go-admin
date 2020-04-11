@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/GoAdminGroup/go-admin/modules/system"
 	"html/template"
 	"path"
 	"plugin"
@@ -15,10 +16,10 @@ import (
 	"sync"
 
 	c "github.com/GoAdminGroup/go-admin/modules/config"
+	e "github.com/GoAdminGroup/go-admin/modules/errors"
 	"github.com/GoAdminGroup/go-admin/modules/language"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"github.com/GoAdminGroup/go-admin/modules/menu"
-	"github.com/GoAdminGroup/go-admin/modules/utils"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
 	"github.com/GoAdminGroup/go-admin/template/login"
 	"github.com/GoAdminGroup/go-admin/template/types"
@@ -41,6 +42,7 @@ type Template interface {
 	Tree() types.TreeAttribute
 	Tabs() types.TabsAttribute
 	Alert() types.AlertAttribute
+	Link() types.LinkAttribute
 
 	Paginator() types.PaginatorAttribute
 	Popup() types.PopupAttribute
@@ -56,6 +58,8 @@ type Template interface {
 	GetAssetList() []string
 	GetAsset(string) ([]byte, error)
 	GetTemplate(bool) (*template.Template, string)
+	GetVersion() string
+	GetRequirements() []string
 }
 
 func HTML(s string) template.HTML {
@@ -85,7 +89,7 @@ func Get(theme string) Template {
 // Get the default template with the theme name set with the global config.
 // If the name is not found, it panics.
 func Default() Template {
-	if temp, ok := templateMap[c.Get().Theme]; ok {
+	if temp, ok := templateMap[c.GetTheme()]; ok {
 		return temp
 	}
 	panic("wrong theme name")
@@ -109,6 +113,25 @@ func Add(name string, temp Template) {
 		panic("add template twice " + name)
 	}
 	templateMap[name] = temp
+}
+
+func CheckRequirements() bool {
+	for _, v := range Default().GetRequirements() {
+		if v == system.Version() {
+			return true
+		}
+	}
+	return false
+}
+
+func Themes() []string {
+	names := make([]string, len(templateMap))
+	i := 0
+	for k := range templateMap {
+		names[i] = k
+		i++
+	}
+	return names
 }
 
 func AddFromPlugin(name string, mod string) {
@@ -207,10 +230,10 @@ func getHTMLFromAssetUrl(s string) template.HTML {
 	fileSuffix = strings.Replace(fileSuffix, ".", "", -1)
 
 	if fileSuffix == "css" {
-		return template.HTML(`<link rel="stylesheet" href="` + c.Get().AssetUrl + c.Get().Url("/assets"+s) + `">`)
+		return template.HTML(`<link rel="stylesheet" href="` + c.GetAssetUrl() + c.Url("/assets"+s) + `">`)
 	}
 	if fileSuffix == "js" {
-		return template.HTML(`<script src="` + c.Get().AssetUrl + c.Get().Url("/assets"+s) + `"></script>`)
+		return template.HTML(`<script src="` + c.GetAssetUrl() + c.Url("/assets"+s) + `"></script>`)
 	}
 	return ""
 }
@@ -261,44 +284,78 @@ func SetComp(name string, comp Component) {
 	}
 }
 
-func Execute(tmpl *template.Template,
-	tmplName string,
-	user models.UserModel,
-	panel types.Panel,
-	config c.Config,
-	globalMenu *menu.Menu) *bytes.Buffer {
+type ExecuteParam struct {
+	User      models.UserModel
+	Tmpl      *template.Template
+	TmplName  string
+	Panel     types.Panel
+	Config    c.Config
+	Menu      *menu.Menu
+	Animation bool
+	Buttons   types.Buttons
+}
 
-	if !config.Debug {
-		utils.CompressedContent(&panel.Content)
-	}
+func Execute(param ExecuteParam) *bytes.Buffer {
+
 	buf := new(bytes.Buffer)
-	err := tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(user, *globalMenu, panel, config, GetComponentAssetListsHTML()))
+	err := param.Tmpl.ExecuteTemplate(buf, param.TmplName,
+		types.NewPage(types.NewPageParam{
+			User:    param.User,
+			Menu:    param.Menu,
+			Panel:   param.Panel.GetContent(append([]bool{param.Config.IsProductionEnvironment()}, param.Animation)...),
+			Assets:  GetComponentAssetListsHTML(),
+			Buttons: param.Buttons,
+		}))
 	if err != nil {
 		fmt.Println("Execute err", err)
 	}
 	return buf
 }
 
-func DefaultFuncMap() template.FuncMap {
-	return template.FuncMap{
-		"lang":     language.Get,
-		"langHtml": language.GetFromHtml,
-		"link": func(cdnUrl, prefixUrl, assetsUrl string) string {
-			if cdnUrl == "" {
-				return prefixUrl + assetsUrl
-			}
-			return cdnUrl + assetsUrl
-		},
-		"isLinkUrl": func(s string) bool {
-			return (len(s) > 7 && s[:7] == "http://") || (len(s) > 8 && s[:8] == "https://")
-		},
-		"render": func(s, old, repl template.HTML) template.HTML {
-			return template.HTML(strings.Replace(string(s), string(old), string(repl), -1))
-		},
-		"renderJS": func(s template.JS, old, repl template.HTML) template.JS {
-			return template.JS(strings.Replace(string(s), string(old), string(repl), -1))
-		},
+func WarningPanel(msg string) types.Panel {
+	return types.Panel{
+		Content:     Default().Alert().Warning(msg),
+		Description: e.Msg,
+		Title:       e.Msg,
 	}
+}
+
+var DefaultFuncMap = template.FuncMap{
+	"lang":     language.Get,
+	"langHtml": language.GetFromHtml,
+	"link": func(cdnUrl, prefixUrl, assetsUrl string) string {
+		if cdnUrl == "" {
+			return prefixUrl + assetsUrl
+		}
+		return cdnUrl + assetsUrl
+	},
+	"isLinkUrl": func(s string) bool {
+		return (len(s) > 7 && s[:7] == "http://") || (len(s) > 8 && s[:8] == "https://")
+	},
+	"render": func(s, old, repl template.HTML) template.HTML {
+		return template.HTML(strings.Replace(string(s), string(old), string(repl), -1))
+	},
+	"renderJS": func(s template.JS, old, repl template.HTML) template.JS {
+		return template.JS(strings.Replace(string(s), string(old), string(repl), -1))
+	},
+	"divide": func(a, b int) int {
+		return a / b
+	},
+	"renderRowDataHTML": func(id, content template.HTML) template.HTML {
+		return template.HTML(types.ParseTableDataTmplWithID(id, string(content)))
+	},
+	"renderRowDataJS": func(id template.HTML, content template.JS) template.JS {
+		return template.JS(types.ParseTableDataTmplWithID(id, string(content)))
+	},
+	"js": func(s interface{}) template.JS {
+		if ss, ok := s.(string); ok {
+			return template.JS(ss)
+		}
+		if ss, ok := s.(template.HTML); ok {
+			return template.JS(ss)
+		}
+		return ""
+	},
 }
 
 type BaseComponent struct{}

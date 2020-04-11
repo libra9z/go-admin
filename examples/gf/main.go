@@ -7,14 +7,11 @@ import (
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	_ "github.com/GoAdminGroup/go-admin/modules/db/drivers/mysql"
 	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/plugins/admin"
 	"github.com/GoAdminGroup/go-admin/plugins/example"
 	"github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/chartjs"
-	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/GoAdminGroup/themes/adminlte"
 	"github.com/gogf/gf/frame/g"
-	"github.com/gogf/gf/net/ghttp"
 	"log"
 	"os"
 	"os/signal"
@@ -52,16 +49,7 @@ func main() {
 		ColorScheme: adminlte.ColorschemeSkinBlack,
 	}
 
-	adminPlugin := admin.NewAdmin(datamodel.Generators).AddDisplayFilterXssJsFilter()
-
 	template.AddComp(chartjs.NewChart())
-
-	// add generator, first parameter is the url prefix of table when visit.
-	// example:
-	//
-	// "user" => http://localhost:9033/admin/info/user
-	//
-	adminPlugin.AddGenerator("user", datamodel.GetUserTable)
 
 	// customize a plugin
 
@@ -72,7 +60,7 @@ func main() {
 	// examplePlugin := plugins.LoadFromPlugin("../datamodel/example.so")
 
 	// customize the login page
-	// example: https://github.com/GoAdminGroup/go-admin/blob/master/demo/main.go#L30
+	// example: https://github.com/GoAdminGroup/demo.go-admin.cn/blob/master/main.go#L39
 	//
 	// template.AddComp("login", datamodel.LoginPage)
 
@@ -81,7 +69,15 @@ func main() {
 	// eng.AddConfigFromJSON("../datamodel/config.json")
 
 	if err := eng.AddConfig(cfg).
-		AddPlugins(adminPlugin, examplePlugin).
+		AddGenerators(datamodel.Generators).
+		AddDisplayFilterXssJsFilter().
+		// add generator, first parameter is the url prefix of table when visit.
+		// example:
+		//
+		// "user" => http://localhost:9033/admin/info/user
+		//
+		AddGenerator("user", datamodel.GetUserTable).
+		AddPlugins(examplePlugin).
 		Use(s); err != nil {
 		panic(err)
 	}
@@ -90,11 +86,7 @@ func main() {
 
 	// customize your pages
 
-	s.BindHandler("GET:/admin", func(ctx *ghttp.Request) {
-		eng.Content(ctx, func(ctx interface{}) (types.Panel, error) {
-			return datamodel.GetContent()
-		})
-	})
+	eng.HTML("GET", "/admin", datamodel.GetContent)
 
 	s.SetPort(9033)
 	go s.Run()

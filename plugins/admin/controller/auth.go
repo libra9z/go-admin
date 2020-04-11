@@ -7,6 +7,7 @@ import (
 	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"github.com/GoAdminGroup/go-admin/modules/system"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/captcha"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/response"
 	"github.com/GoAdminGroup/go-admin/template"
@@ -16,47 +17,62 @@ import (
 )
 
 // Auth check the input password and username for authentication.
-func Auth(ctx *context.Context) {
+func (h *Handler) Auth(ctx *context.Context) {
 
-	password := ctx.FormValue("password")
-	username := ctx.FormValue("username")
+	var (
+		user     models.UserModel
+		ok       bool
+		errMsg   = "fail"
+		s, exist = h.services.GetOrNot(auth.ServiceKey)
+	)
 
-	if password == "" || username == "" {
-		response.BadRequest(ctx, "wrong password or username")
-		return
-	}
-
-	conn := db.GetConnection(services)
-
-	if user, ok := auth.Check(password, username, conn); ok {
-
-		cd, ok := captcha.Get(captchaConfig["driver"])
+	if capDriver, ok := h.captchaConfig["driver"]; ok {
+		capt, ok := captcha.Get(capDriver)
 
 		if ok {
-			if !cd.Validate(ctx.FormValue("token")) {
+			if !capt.Validate(ctx.FormValue("token")) {
 				response.BadRequest(ctx, "wrong captcha")
+				return
 			}
 		}
+	}
 
-		auth.SetCookie(ctx, user, conn)
+	if !exist {
+		password := ctx.FormValue("password")
+		username := ctx.FormValue("username")
 
-		response.OkWithData(ctx, map[string]interface{}{
-			"url": config.GetIndexURL(),
-		})
+		if password == "" || username == "" {
+			response.BadRequest(ctx, "wrong password or username")
+			return
+		}
+		user, ok = auth.Check(password, username, h.conn)
+	} else {
+		user, ok, errMsg = auth.GetService(s).P(ctx)
+	}
+
+	if !ok {
+		response.BadRequest(ctx, errMsg)
 		return
 	}
-	response.BadRequest(ctx, "fail")
+
+	auth.SetCookie(ctx, user, h.conn)
+
+	response.OkWithData(ctx, map[string]interface{}{
+		"url": h.config.GetIndexURL(),
+	})
+	return
+
 }
 
 // Logout delete the cookie.
-func Logout(ctx *context.Context) {
-	auth.DelCookie(ctx, db.GetConnection(services))
-	ctx.AddHeader("Location", config.Url("/login"))
+func (h *Handler) Logout(ctx *context.Context) {
+	auth.DelCookie(ctx, db.GetConnection(h.services))
+	ctx.AddHeader("Location", h.config.Url("/login"))
 	ctx.SetStatusCode(302)
 }
 
 // ShowLogin show the login page.
-func ShowLogin(ctx *context.Context) {
+func (h *Handler) ShowLogin(ctx *context.Context) {
 
 	tmpl, name := template.GetComp("login").GetTemplate()
 	buf := new(bytes.Buffer)
@@ -67,13 +83,13 @@ func ShowLogin(ctx *context.Context) {
 		CdnUrl    string
 		System    types.SystemInfo
 	}{
-		UrlPrefix: config.AssertPrefix(),
-		Title:     config.LoginTitle,
-		Logo:      config.LoginLogo,
+		UrlPrefix: h.config.AssertPrefix(),
+		Title:     h.config.LoginTitle,
+		Logo:      h.config.LoginLogo,
 		System: types.SystemInfo{
 			Version: system.Version(),
 		},
-		CdnUrl: config.AssetUrl,
+		CdnUrl: h.config.AssetUrl,
 	}); err == nil {
 		ctx.HTML(http.StatusOK, buf.String())
 	} else {

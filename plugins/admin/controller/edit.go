@@ -2,93 +2,105 @@ package controller
 
 import (
 	"fmt"
+	template2 "html/template"
+	"net/http"
+	"net/url"
+
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/auth"
 	"github.com/GoAdminGroup/go-admin/modules/file"
 	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/modules/menu"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
+	form2 "github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/guard"
-	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
-	"github.com/GoAdminGroup/go-admin/template"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/parameter"
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/GoAdminGroup/go-admin/template/types/form"
-	template2 "html/template"
-	"net/http"
 )
 
 // ShowForm show form page.
-func ShowForm(ctx *context.Context) {
+func (h *Handler) ShowForm(ctx *context.Context) {
 	param := guard.GetShowFormParam(ctx)
-	showForm(ctx, "", param.Prefix, param.Id, param.GetUrl(), param.GetInfoUrl(), "")
+	h.showForm(ctx, "", param.Prefix, param.Param, false)
 }
 
-func showForm(ctx *context.Context, alert template2.HTML, prefix string, id string, url, infoUrl string, editUrl string) {
+func (h *Handler) showForm(ctx *context.Context, alert template2.HTML, prefix string, param parameter.Parameters, isEdit bool, animation ...bool) {
 
-	table.RefreshTableList()
-	panel := table.Get(prefix)
-
-	formData, groupFormData, groupHeaders, title, description, err := panel.GetDataFromDatabaseWithId(id)
-
-	if err != nil && alert == "" {
-		alert = aAlert().SetTitle(template2.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-			SetTheme("warning").
-			SetContent(template2.HTML(err.Error())).
-			GetContent()
-	}
+	panel := h.table(prefix, ctx)
 
 	user := auth.Auth(ctx)
 
-	referer := ctx.Headers("Referer")
+	paramStr := param.GetRouteParamStr()
 
-	if referer != "" && !modules.IsInfoUrl(referer) && !modules.IsEditUrl(referer, ctx.Query("__prefix")) {
-		infoUrl = referer
+	newUrl := modules.AorEmpty(panel.GetCanAdd(), h.routePathWithPrefix("show_new", prefix)+paramStr)
+	footerKind := "edit"
+	if newUrl == "" || !user.CheckPermissionByUrlMethod(newUrl, h.route("show_new").Method(), url.Values{}) {
+		footerKind = "edit_only"
 	}
 
-	tmpl, tmplName := aTemplate().GetTemplate(isPjax(ctx))
-	buf := template.Execute(tmpl, tmplName, user, types.Panel{
-		Content: alert + formContent(aForm().
-			SetContent(formData).
-			SetTabContents(groupFormData).
-			SetTabHeaders(groupHeaders).
-			SetPrefix(config.PrefixFixSlash()).
-			SetPrimaryKey(panel.GetPrimaryKey().Name).
-			SetUrl(url).
-			SetToken(authSrv().AddToken()).
-			SetInfoUrl(infoUrl).
-			SetOperationFooter(formFooter()).
-			SetHeader(panel.GetForm().HeaderHtml).
-			SetFooter(panel.GetForm().FooterHtml)),
-		Description: description,
-		Title:       title,
-	}, config, menu.GetGlobalMenu(user, conn).SetActiveClass(config.URLRemovePrefix(ctx.Path())))
+	formInfo, err := panel.GetDataWithId(param)
 
-	ctx.HTML(http.StatusOK, buf.String())
+	showEditUrl := h.routePathWithPrefix("show_edit", prefix) + param.DeletePK().GetRouteParamStr()
 
-	if editUrl != "" {
-		ctx.AddHeader(constant.PjaxUrlHeader, editUrl)
-	}
-}
+	if err != nil {
+		h.HTML(ctx, user, types.Panel{
+			Content:     aAlert().Warning(err.Error()),
+			Description: panel.GetForm().Description,
+			Title:       panel.GetForm().Title,
+		}, alert == "" || ((len(animation) > 0) && animation[0]))
 
-func EditForm(ctx *context.Context) {
-
-	param := guard.GetEditFormParam(ctx)
-
-	if param.HasAlert() {
-		showForm(ctx, param.Alert, param.Prefix, param.Id, param.GetUrl(), param.GetInfoUrl(), param.GetEditUrl())
+		if isEdit {
+			ctx.AddHeader(constant.PjaxUrlHeader, showEditUrl)
+		}
 		return
 	}
 
-	// process uploading files, only support local storage for now.
+	infoUrl := h.routePathWithPrefix("info", prefix) + param.DeleteField(constant.EditPKKey).GetRouteParamStr()
+	editUrl := h.routePathWithPrefix("edit", prefix)
+
+	referer := ctx.Headers("Referer")
+
+	if referer != "" && !isInfoUrl(referer) && !isEditUrl(referer, ctx.Query(constant.PrefixKey)) {
+		infoUrl = referer
+	}
+
+	f := panel.GetForm()
+
+	h.HTML(ctx, user, types.Panel{
+		Content: alert + formContent(aForm().
+			SetContent(formInfo.FieldList).
+			SetTabContents(formInfo.GroupFieldList).
+			SetTabHeaders(formInfo.GroupFieldHeaders).
+			SetPrefix(h.config.PrefixFixSlash()).
+			SetPrimaryKey(panel.GetPrimaryKey().Name).
+			SetUrl(editUrl).
+			SetHiddenFields(map[string]string{
+				form2.TokenKey:    h.authSrv().AddToken(),
+				form2.PreviousKey: infoUrl,
+			}).
+			SetOperationFooter(formFooter(footerKind, f.IsHideContinueEditCheckBox, f.IsHideContinueNewCheckBox,
+				f.IsHideResetButton)).
+			SetHeader(f.HeaderHtml).
+			SetFooter(f.FooterHtml), len(formInfo.GroupFieldHeaders) > 0),
+		Description: formInfo.Description,
+		Title:       formInfo.Title,
+	}, alert == "" || ((len(animation) > 0) && animation[0]))
+
+	if isEdit {
+		ctx.AddHeader(constant.PjaxUrlHeader, showEditUrl)
+	}
+}
+
+func (h *Handler) EditForm(ctx *context.Context) {
+
+	param := guard.GetEditFormParam(ctx)
+
 	if len(param.MultiForm.File) > 0 {
-		err := file.GetFileEngine(config.FileUploadEngine.Name).Upload(param.MultiForm)
+		err := file.GetFileEngine(h.config.FileUploadEngine.Name).Upload(param.MultiForm)
 		if err != nil {
-			alert := aAlert().SetTitle(template2.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-				SetTheme("warning").
-				SetContent(template2.HTML(err.Error())).
-				GetContent()
-			showForm(ctx, alert, param.Prefix, param.Id, param.GetUrl(), param.GetInfoUrl(), param.GetEditUrl())
+			alert := aAlert().Warning(err.Error())
+			h.showForm(ctx, alert, param.Prefix, param.Param, true)
 			return
 		}
 	}
@@ -101,32 +113,40 @@ func EditForm(ctx *context.Context) {
 		}
 	}
 
-	err := param.Panel.UpdateDataFromDatabase(param.Value())
+	err := param.Panel.UpdateData(param.Value())
 	if err != nil {
-		alert := aAlert().SetTitle(template2.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-			SetTheme("warning").
-			SetContent(template2.HTML(err.Error())).
-			GetContent()
-		showForm(ctx, alert, param.Prefix, param.Id, param.GetUrl(), param.GetInfoUrl(), param.GetEditUrl())
+		alert := aAlert().Warning(err.Error())
+		h.showForm(ctx, alert, param.Prefix, param.Param, true)
+		return
+	}
+
+	if param.Prefix == "site" {
+		ctx.HTML(http.StatusOK, fmt.Sprintf(`<script>
+		swal('%s', '', 'success');
+		setTimeout(function(){location.reload()}, 1000)
+</script>`, language.Get("modify success")))
+		ctx.AddHeader(constant.PjaxUrlHeader, h.config.Url("/info/site/edit"))
 		return
 	}
 
 	if !param.FromList {
+
+		if isNewUrl(param.PreviousPath, param.Prefix) {
+			h.showNewForm(ctx, param.Alert, param.Prefix, param.Param.DeleteEditPk().GetRouteParamStr(), true)
+			return
+		}
+
+		if isEditUrl(param.PreviousPath, param.Prefix) {
+			h.showForm(ctx, param.Alert, param.Prefix, param.Param, true, false)
+			return
+		}
+
 		ctx.HTML(http.StatusOK, fmt.Sprintf(`<script>location.href="%s"</script>`, param.PreviousPath))
 		ctx.AddHeader(constant.PjaxUrlHeader, param.PreviousPath)
 		return
 	}
 
-	editUrl := modules.AorB(param.Panel.GetEditable(), param.GetEditUrl(), "")
-	deleteUrl := modules.AorB(param.Panel.GetDeletable(), param.GetDeleteUrl(), "")
-	exportUrl := modules.AorB(param.Panel.GetExportable(), param.GetExportUrl(), "")
-	newUrl := modules.AorB(param.Panel.GetCanAdd(), param.GetNewUrl(), "")
-	infoUrl := param.GetInfoUrl()
-	updateUrl := modules.AorB(param.Panel.GetEditable(), param.GetUpdateUrl(), "")
-	detailUrl := param.GetDetailUrl()
-
-	buf := showTable(ctx, param.Panel, param.Path, param.Param, exportUrl, newUrl,
-		deleteUrl, infoUrl, editUrl, updateUrl, detailUrl)
+	buf := h.showTable(ctx, param.Prefix, param.Param.DeletePK().DeleteEditPk(), nil)
 
 	ctx.HTML(http.StatusOK, buf.String())
 	ctx.AddHeader(constant.PjaxUrlHeader, param.PreviousPath)

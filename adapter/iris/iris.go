@@ -12,6 +12,7 @@ import (
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/kataras/iris/v12"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/GoAdminGroup/go-admin/context"
@@ -40,8 +41,8 @@ func (is *Iris) Use(router interface{}, plugs []plugins.Plugin) error {
 	return is.GetUse(router, plugs, is)
 }
 
-func (is *Iris) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	is.GetContent(ctx, getPanelFn, is)
+func (is *Iris) Content(ctx interface{}, getPanelFn types.GetPanelFn, btns ...types.Button) {
+	is.GetContent(ctx, getPanelFn, is, btns)
 }
 
 type HandlerFunc func(ctx iris.Context) (types.Panel, error)
@@ -66,7 +67,7 @@ func (is *Iris) SetApp(app interface{}) error {
 	return nil
 }
 
-func (is *Iris) AddHandler(method, path string, plug plugins.Plugin) {
+func (is *Iris) AddHandler(method, path string, handlers context.Handlers) {
 	is.app.Handle(strings.ToUpper(method), path, func(c iris.Context) {
 		ctx := context.NewContext(c.Request())
 
@@ -83,7 +84,7 @@ func (is *Iris) AddHandler(method, path string, plug plugins.Plugin) {
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(c.Request().URL.Path, strings.ToLower(c.Request().Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			c.Header(key, head[0])
 		}
@@ -113,7 +114,7 @@ func (is *Iris) SetContext(contextInterface interface{}) adapter.WebFrameWork {
 }
 
 func (is *Iris) Redirect() {
-	is.ctx.Redirect(config.Get().Url("/login"), http.StatusFound)
+	is.ctx.Redirect(config.Url("/login"), http.StatusFound)
 }
 
 func (is *Iris) SetContentType() {
@@ -136,6 +137,10 @@ func (is *Iris) Method() string {
 	return is.ctx.Method()
 }
 
-func (is *Iris) PjaxHeader() string {
-	return is.ctx.GetHeader(constant.PjaxHeader)
+func (is *Iris) FormParam() url.Values {
+	return is.ctx.FormValues()
+}
+
+func (is *Iris) IsPjax() bool {
+	return is.ctx.GetHeader(constant.PjaxHeader) == "true"
 }

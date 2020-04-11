@@ -1,10 +1,13 @@
 package models
 
 import (
+	"database/sql"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -33,17 +36,22 @@ type UserModel struct {
 
 // User return a default user model.
 func User() UserModel {
-	return UserModel{Base: Base{TableName: "goadmin_users"}}
+	return UserModel{Base: Base{TableName: config.GetAuthUserTable()}}
 }
 
 // UserWithId return a default user model of given id.
 func UserWithId(id string) UserModel {
 	idInt, _ := strconv.Atoi(id)
-	return UserModel{Base: Base{TableName: "goadmin_users"}, Id: int64(idInt)}
+	return UserModel{Base: Base{TableName: config.GetAuthUserTable()}, Id: int64(idInt)}
 }
 
 func (t UserModel) SetConn(con db.Connection) UserModel {
 	t.Conn = con
+	return t
+}
+
+func (t UserModel) WithTx(tx *sql.Tx) UserModel {
+	t.Tx = tx
 	return t
 }
 
@@ -79,8 +87,20 @@ func (t UserModel) IsSuperAdmin() bool {
 	return false
 }
 
-func (t UserModel) CheckPermissionByUrlMethod(path, method string) bool {
-	logoutCheck, _ := regexp.Compile(config.Get().Url("/logout") + "(.*?)")
+func (t UserModel) GetCheckPermissionByUrlMethod(path, method string) string {
+	if !t.CheckPermissionByUrlMethod(path, method, url.Values{}) {
+		return ""
+	}
+	return path
+}
+
+func (t UserModel) CheckPermissionByUrlMethod(path, method string, formParams url.Values) bool {
+
+	if t.IsSuperAdmin() {
+		return true
+	}
+
+	logoutCheck, _ := regexp.Compile(config.Url("/logout") + "(.*?)")
 
 	if logoutCheck.MatchString(path) {
 		return true
@@ -94,7 +114,15 @@ func (t UserModel) CheckPermissionByUrlMethod(path, method string) bool {
 		path = path[:len(path)-1]
 	}
 
-	pathArr := strings.Split(path, "?")
+	path = strings.Replace(path, constant.EditPKKey, "id", -1)
+	path = strings.Replace(path, constant.DetailPKKey, "id", -1)
+
+	path, params := getParam(path)
+	for key, value := range formParams {
+		if len(value) > 0 {
+			params.Add(key, value[0])
+		}
+	}
 
 	for _, v := range t.Permissions {
 
@@ -106,18 +134,13 @@ func (t UserModel) CheckPermissionByUrlMethod(path, method string) bool {
 
 			for i := 0; i < len(v.HttpPath); i++ {
 
-				matchPath := config.Get().Url(strings.TrimSpace(v.HttpPath[i]))
-
-				if len(pathArr) > 1 {
-					if pathArr[0] == matchPath && !strings.Contains(matchPath, "?") {
-						matchPath += "(.*)"
-					} else if strings.Contains(matchPath, "?id=") && !strings.Contains(matchPath, "(.*)") {
-						matchPath = strings.Replace(matchPath, "?", "(.*)", -1) + "(.*)"
-					}
-				}
+				matchPath := config.Url(strings.TrimSpace(v.HttpPath[i]))
+				matchPath, matchParam := getParam(matchPath)
 
 				if matchPath == path {
-					return true
+					if checkParam(params, matchParam) {
+						return true
+					}
 				}
 
 				reg, err := regexp.Compile(matchPath)
@@ -128,13 +151,53 @@ func (t UserModel) CheckPermissionByUrlMethod(path, method string) bool {
 				}
 
 				if reg.FindString(path) == path {
-					return true
+					if checkParam(params, matchParam) {
+						return true
+					}
 				}
 			}
 		}
 	}
 
 	return false
+}
+
+func getParam(u string) (string, url.Values) {
+	m := make(url.Values)
+	urr := strings.Split(u, "?")
+	if len(urr) > 1 {
+		m, _ = url.ParseQuery(urr[1])
+	}
+	return urr[0], m
+}
+
+func checkParam(src, comp url.Values) bool {
+	if len(comp) == 0 {
+		return true
+	}
+	if len(src) == 0 {
+		return false
+	}
+	for key, value := range comp {
+		v, find := src[key]
+		if !find {
+			return false
+		}
+		if len(value) == 0 {
+			continue
+		}
+		if len(v) == 0 {
+			return false
+		}
+		for i := 0; i < len(v); i++ {
+			if v[i] == value[i] {
+				continue
+			} else {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func inMethodArr(arr []string, str string) bool {
@@ -274,9 +337,9 @@ func (t UserModel) WithMenus() UserModel {
 }
 
 // New create a user model.
-func (t UserModel) New(username, password, name, avatar string) UserModel {
+func (t UserModel) New(username, password, name, avatar string) (UserModel, error) {
 
-	id, _ := t.Table(t.TableName).Insert(dialect.H{
+	id, err := t.WithTx(t.Tx).Table(t.TableName).Insert(dialect.H{
 		"username": username,
 		"password": password,
 		"name":     name,
@@ -289,11 +352,11 @@ func (t UserModel) New(username, password, name, avatar string) UserModel {
 	t.Avatar = avatar
 	t.Name = name
 
-	return t
+	return t, err
 }
 
 // Update update the user model.
-func (t UserModel) Update(username, password, name, avatar string) UserModel {
+func (t UserModel) Update(username, password, name, avatar string) (int64, error) {
 
 	fieldValues := dialect.H{
 		"username":   username,
@@ -311,15 +374,9 @@ func (t UserModel) Update(username, password, name, avatar string) UserModel {
 		t.Avatar = avatar
 	}
 
-	_, _ = t.Table(t.TableName).
+	return t.WithTx(t.Tx).Table(t.TableName).
 		Where("id", "=", t.Id).
 		Update(fieldValues)
-
-	t.UserName = username
-	t.Password = password
-	t.Name = name
-
-	return t
 }
 
 // UpdatePwd update the password of the user model.
@@ -345,23 +402,24 @@ func (t UserModel) CheckRoleId(roleId string) bool {
 }
 
 // DeleteRoles delete all the roles of the user model.
-func (t UserModel) DeleteRoles() {
-	_ = t.Table("goadmin_role_users").
+func (t UserModel) DeleteRoles() error {
+	return t.Table("goadmin_role_users").
 		Where("user_id", "=", t.Id).
 		Delete()
 }
 
 // AddRole add a role of the user model.
-func (t UserModel) AddRole(roleId string) {
+func (t UserModel) AddRole(roleId string) (int64, error) {
 	if roleId != "" {
 		if !t.CheckRoleId(roleId) {
-			_, _ = t.Table("goadmin_role_users").
+			return t.WithTx(t.Tx).Table("goadmin_role_users").
 				Insert(dialect.H{
 					"role_id": roleId,
 					"user_id": t.Id,
 				})
 		}
 	}
+	return 0, nil
 }
 
 // CheckRole check the role of the user.
@@ -396,23 +454,24 @@ func (t UserModel) CheckPermission(permission string) bool {
 }
 
 // DeletePermissions delete all the permissions of the user model.
-func (t UserModel) DeletePermissions() {
-	_ = t.Table("goadmin_user_permissions").
+func (t UserModel) DeletePermissions() error {
+	return t.WithTx(t.Tx).Table("goadmin_user_permissions").
 		Where("user_id", "=", t.Id).
 		Delete()
 }
 
 // AddPermission add a permission of the user model.
-func (t UserModel) AddPermission(permissionId string) {
+func (t UserModel) AddPermission(permissionId string) (int64, error) {
 	if permissionId != "" {
 		if !t.CheckPermissionById(permissionId) {
-			_, _ = t.Table("goadmin_user_permissions").
+			return t.WithTx(t.Tx).Table("goadmin_user_permissions").
 				Insert(dialect.H{
 					"permission_id": permissionId,
 					"user_id":       t.Id,
 				})
 		}
 	}
+	return 0, nil
 }
 
 // MapToModel get the user model from given map.

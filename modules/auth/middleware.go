@@ -7,13 +7,16 @@ package auth
 import (
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/config"
+	"github.com/GoAdminGroup/go-admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/modules/db"
+	"github.com/GoAdminGroup/go-admin/modules/errors"
 	"github.com/GoAdminGroup/go-admin/modules/language"
 	"github.com/GoAdminGroup/go-admin/modules/page"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
 	template2 "github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/types"
-	"html/template"
+	"net/http"
+	"net/url"
 )
 
 // Invoker contains the callback functions which are used
@@ -33,24 +36,23 @@ func Middleware(conn db.Connection) context.Handler {
 // DefaultInvoker return a default Invoker.
 func DefaultInvoker(conn db.Connection) *Invoker {
 	return &Invoker{
-		prefix: config.Get().Prefix(),
+		prefix: config.Prefix(),
 		authFailCallback: func(ctx *context.Context) {
 			ctx.Write(302, map[string]string{
-				"Location": config.Get().Url("/login"),
+				"Location": config.Url("/login"),
 			}, ``)
 		},
 		permissionDenyCallback: func(ctx *context.Context) {
-			page.SetPageContent(ctx, Auth(ctx), func(ctx interface{}) (types.Panel, error) {
-				alert := template2.Get(config.Get().Theme).Alert().
-					SetTitle(template.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-					SetTheme("warning").SetContent(template.HTML("permission denied")).GetContent()
-
-				return types.Panel{
-					Content:     alert,
-					Description: "Error",
-					Title:       "Error",
-				}, nil
-			}, conn)
+			if ctx.Headers(constant.PjaxHeader) == "" && ctx.Method() != "GET" {
+				ctx.JSON(http.StatusForbidden, map[string]interface{}{
+					"code": http.StatusForbidden,
+					"msg":  language.Get(errors.PermissionDenied),
+				})
+			} else {
+				page.SetPageContent(ctx, Auth(ctx), func(ctx interface{}) (types.Panel, error) {
+					return template2.WarningPanel(errors.PermissionDenied), nil
+				}, conn)
+			}
 		},
 		conn: conn,
 	}
@@ -123,7 +125,7 @@ func Filter(ctx *context.Context, conn db.Connection) (models.UserModel, bool, b
 		return user, false, false
 	}
 
-	return user, true, CheckPermissions(user, ctx.Request.URL.String(), ctx.Method())
+	return user, true, CheckPermissions(user, ctx.Request.URL.String(), ctx.Method(), ctx.PostForm())
 }
 
 const defaultUserIDSesKey = "user_id"
@@ -163,10 +165,10 @@ func GetCurUserByID(id int64, conn db.Connection) (user models.UserModel, ok boo
 		return
 	}
 
-	if user.Avatar == "" || config.Get().Store.Prefix == "" {
+	if user.Avatar == "" || config.GetStore().Prefix == "" {
 		user.Avatar = ""
 	} else {
-		user.Avatar = "/" + config.Get().Store.Prefix + "/" + user.Avatar
+		user.Avatar = config.GetStore().URL(user.Avatar)
 	}
 
 	user = user.WithRoles().WithPermissions().WithMenus()
@@ -177,6 +179,6 @@ func GetCurUserByID(id int64, conn db.Connection) (user models.UserModel, ok boo
 }
 
 // CheckPermissions check the permission of the user.
-func CheckPermissions(user models.UserModel, path, method string) bool {
-	return user.CheckPermissionByUrlMethod(path, method)
+func CheckPermissions(user models.UserModel, path, method string, param url.Values) bool {
+	return user.CheckPermissionByUrlMethod(path, method, param)
 }

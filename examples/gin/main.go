@@ -1,25 +1,25 @@
 package main
 
 import (
+	"io/ioutil"
+	"log"
+	"os"
+	"os/signal"
+
 	_ "github.com/GoAdminGroup/go-admin/adapter/gin"
+	_ "github.com/GoAdminGroup/go-admin/modules/db/drivers/mysql"
+
+	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/engine"
 	"github.com/GoAdminGroup/go-admin/examples/datamodel"
 	"github.com/GoAdminGroup/go-admin/modules/config"
-	_ "github.com/GoAdminGroup/go-admin/modules/db/drivers/mysql"
-	_ "github.com/GoAdminGroup/go-admin/modules/db/drivers/postgres"
 	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/plugins/admin"
 	"github.com/GoAdminGroup/go-admin/plugins/example"
 	"github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/chartjs"
-	"github.com/GoAdminGroup/go-admin/template/types"
+	"github.com/GoAdminGroup/go-admin/template/types/action"
 	"github.com/GoAdminGroup/themes/adminlte"
 	"github.com/gin-gonic/gin"
-	"io/ioutil"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
 )
 
 func main() {
@@ -28,7 +28,7 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter = ioutil.Discard
 
-	eng := engine.Default()
+	e := engine.Default()
 
 	cfg := config.Config{
 		Databases: config.DatabaseList{
@@ -51,22 +51,16 @@ func main() {
 			Path:   "./uploads",
 			Prefix: "uploads",
 		},
-		Language:    language.CN,
-		IndexUrl:    "/",
-		Debug:       true,
+		Language: language.CN,
+		IndexUrl: "/",
+		Debug:    true,
+		Animation: config.PageAnimation{
+			Type: "fadeInUp",
+		},
 		ColorScheme: adminlte.ColorschemeSkinBlack,
 	}
 
-	adminPlugin := admin.NewAdmin(datamodel.Generators).AddDisplayFilterXssJsFilter()
-
 	template.AddComp(chartjs.NewChart())
-
-	// add generator, first parameter is the url prefix of table when visit.
-	// example:
-	//
-	// "user" => http://localhost:9033/admin/info/user
-	//
-	adminPlugin.AddGenerator("user", datamodel.GetUserTable)
 
 	// customize a plugin
 
@@ -77,16 +71,29 @@ func main() {
 	// examplePlugin := plugins.LoadFromPlugin("../datamodel/example.so")
 
 	// customize the login page
-	// example: https://github.com/GoAdminGroup/go-admin/blob/master/demo/main.go#L30
+	// example: https://github.com/GoAdminGroup/demo.go-admin.cn/blob/master/main.go#L39
 	//
 	// template.AddComp("login", datamodel.LoginPage)
 
 	// load config from json file
 	//
-	// eng.AddConfigFromJSON("../datamodel/config.json")
+	// e.AddConfigFromJSON("../datamodel/config.json")
 
-	if err := eng.AddConfig(cfg).
-		AddPlugins(adminPlugin, examplePlugin).
+	if err := e.AddConfig(cfg).
+		AddGenerators(datamodel.Generators).
+		// add generator, first parameter is the url prefix of table when visit.
+		// example:
+		//
+		// "user" => http://localhost:9033/admin/info/user
+		//
+		AddGenerator("user", datamodel.GetUserTable).
+		AddDisplayFilterXssJsFilter().
+		AddPlugins(examplePlugin).
+		AddNavButtons("Website Info", "", action.PopUp("/website/info", "Website Info",
+			func(ctx *context.Context) (success bool, msg string, data interface{}) {
+				return true, "ok", `<p>created by <a href="https://github.com/chenhg5">cg33<a/></p>`
+			})).
+		AddNavButtons("Google", "", action.Jump("https://www.google.com")).
 		Use(r); err != nil {
 		panic(err)
 	}
@@ -95,18 +102,7 @@ func main() {
 
 	// customize your pages
 
-	r.GET("/admin", func(ctx *gin.Context) {
-		eng.Content(ctx, func(ctx interface{}) (types.Panel, error) {
-			return datamodel.GetContent()
-		})
-	})
-
-	r.POST("/admin/popup", func(ctx *gin.Context) {
-		ctx.JSON(http.StatusOK, gin.H{
-			"code": 0,
-			"data": "<h2>hello world</h2>",
-		})
-	})
+	e.HTML("GET", "/admin", datamodel.GetContent)
 
 	go func() {
 		_ = r.Run(":9033")
@@ -116,5 +112,5 @@ func main() {
 	signal.Notify(quit, os.Interrupt)
 	<-quit
 	log.Print("closing database connection")
-	eng.MysqlConnection().Close()
+	e.MysqlConnection().Close()
 }

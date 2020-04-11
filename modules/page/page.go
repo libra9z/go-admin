@@ -9,14 +9,11 @@ import (
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/db"
-	"github.com/GoAdminGroup/go-admin/modules/language"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"github.com/GoAdminGroup/go-admin/modules/menu"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
-	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/types"
-	template2 "html/template"
 )
 
 // SetPageContent set and return the panel of page content.
@@ -24,29 +21,23 @@ func SetPageContent(ctx *context.Context, user models.UserModel, c func(ctx inte
 
 	panel, err := c(ctx)
 
-	globalConfig := config.Get()
-
 	if err != nil {
 		logger.Error("SetPageContent", err)
-		alert := template.Get(globalConfig.Theme).
-			Alert().
-			SetTitle(template2.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-			SetTheme("warning").SetContent(template2.HTML(err.Error())).GetContent()
-		panel = types.Panel{
-			Content:     alert,
-			Description: language.Get("error"),
-			Title:       language.Get("error"),
-		}
+		panel = template.WarningPanel(err.Error())
 	}
 
-	tmpl, tmplName := template.Get(globalConfig.Theme).GetTemplate(ctx.Headers(constant.PjaxHeader) == "true")
+	tmpl, tmplName := template.Get(config.GetTheme()).GetTemplate(ctx.IsPjax())
 
 	ctx.AddHeader("Content-Type", "text/html; charset=utf-8")
 
 	buf := new(bytes.Buffer)
-	err = tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(user,
-		*(menu.GetGlobalMenu(user, conn).SetActiveClass(globalConfig.URLRemovePrefix(ctx.Path()))),
-		panel, globalConfig, template.GetComponentAssetListsHTML()))
+
+	err = tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(types.NewPageParam{
+		User:   user,
+		Menu:   menu.GetGlobalMenu(user, conn).SetActiveClass(config.URLRemovePrefix(ctx.Path())),
+		Panel:  panel.GetContent(config.IsProductionEnvironment()),
+		Assets: template.GetComponentAssetListsHTML(),
+	}))
 	if err != nil {
 		logger.Error("SetPageContent", err)
 	}

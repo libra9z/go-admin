@@ -7,33 +7,35 @@ package adapter
 import (
 	"bytes"
 	"fmt"
+	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/auth"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/db"
-	"github.com/GoAdminGroup/go-admin/modules/language"
+	"github.com/GoAdminGroup/go-admin/modules/errors"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
 	"github.com/GoAdminGroup/go-admin/modules/menu"
 	"github.com/GoAdminGroup/go-admin/plugins"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
 	"github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/types"
-	template2 "html/template"
+	"net/url"
 )
 
-// WebFrameWork is a interface which is used as an adapter of
+// WebFrameWork is an interface which is used as an adapter of
 // framework and goAdmin. It must implement two methods. Use registers
 // the routes and the corresponding handlers. Content writes the
 // response to the corresponding context of framework.
 type WebFrameWork interface {
 	Use(interface{}, []plugins.Plugin) error
-	Content(interface{}, types.GetPanelFn)
+	Content(interface{}, types.GetPanelFn, ...types.Button)
 	SetConnection(db.Connection)
 	GetConnection() db.Connection
 	SetContext(ctx interface{}) WebFrameWork
 	GetCookie() (string, error)
 	Path() string
 	Method() string
-	PjaxHeader() string
+	FormParam() url.Values
+	IsPjax() bool
 	Redirect()
 	SetContentType()
 	Write(body []byte)
@@ -42,7 +44,7 @@ type WebFrameWork interface {
 	Name() string
 	User(ci interface{}) (models.UserModel, bool)
 	SetApp(app interface{}) error
-	AddHandler(method, path string, plug plugins.Plugin)
+	AddHandler(method, path string, handlers context.Handlers)
 }
 
 type BaseAdapter struct {
@@ -82,16 +84,15 @@ func (base *BaseAdapter) GetUse(router interface{}, plugin []plugins.Plugin, wf 
 	}
 
 	for _, plug := range plugin {
-		var plugCopy = plug
-		for _, req := range plug.GetRequest() {
-			wf.AddHandler(req.Method, req.URL, plugCopy)
+		for path, handlers := range plug.GetHandler() {
+			wf.AddHandler(path.Method, path.URL, handlers)
 		}
 	}
 
 	return nil
 }
 
-func (base *BaseAdapter) GetContent(ctx interface{}, getPanelFn types.GetPanelFn, wf WebFrameWork) {
+func (base *BaseAdapter) GetContent(ctx interface{}, getPanelFn types.GetPanelFn, wf WebFrameWork, btns types.Buttons) {
 
 	newBase := wf.SetContext(ctx)
 
@@ -114,48 +115,30 @@ func (base *BaseAdapter) GetContent(ctx interface{}, getPanelFn types.GetPanelFn
 		err   error
 	)
 
-	if !auth.CheckPermissions(user, newBase.Path(), newBase.Method()) {
-		alert := getErrorAlert("no permission")
-		errTitle := language.Get("error")
-
-		panel = types.Panel{
-			Content:     alert,
-			Description: errTitle,
-			Title:       errTitle,
-		}
+	if !auth.CheckPermissions(user, newBase.Path(), newBase.Method(), newBase.FormParam()) {
+		panel = template.WarningPanel(errors.NoPermission)
 	} else {
 		panel, err = getPanelFn(ctx)
 		if err != nil {
-			alert := getErrorAlert(err.Error())
-			errTitle := language.Get("error")
-
-			panel = types.Panel{
-				Content:     alert,
-				Description: errTitle,
-				Title:       errTitle,
-			}
+			panel = template.WarningPanel(err.Error())
 		}
 	}
 
-	tmpl, tmplName := template.Default().GetTemplate(newBase.PjaxHeader() == "true")
+	tmpl, tmplName := template.Default().GetTemplate(newBase.IsPjax())
 
 	buf := new(bytes.Buffer)
-	hasError = tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(user,
-		*(menu.GetGlobalMenu(user, wf.GetConnection()).SetActiveClass(config.Get().URLRemovePrefix(newBase.Path()))),
-		panel, config.Get(), template.GetComponentAssetListsHTML()))
+	hasError = tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(types.NewPageParam{
+		User:    user,
+		Menu:    menu.GetGlobalMenu(user, wf.GetConnection()).SetActiveClass(config.URLRemovePrefix(newBase.Path())),
+		Panel:   panel.GetContent(config.IsProductionEnvironment()),
+		Assets:  template.GetComponentAssetListsHTML(),
+		Buttons: btns.CheckPermission(user),
+	}))
 
 	if hasError != nil {
-		logger.Error(fmt.Sprintf("error: %s adapter content, ", newBase.Name()), err)
+		logger.Error(fmt.Sprintf("error: %s adapter content, ", newBase.Name()), hasError)
 	}
 
 	newBase.SetContentType()
 	newBase.Write(buf.Bytes())
-}
-
-func getErrorAlert(msg string) template2.HTML {
-	return template.Default().Alert().
-		SetTitle(template.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-		SetTheme("warning").
-		SetContent(template.HTML(msg)).
-		GetContent()
 }

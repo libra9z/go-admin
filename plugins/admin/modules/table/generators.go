@@ -4,42 +4,63 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/GoAdminGroup/go-admin/modules/config"
-	"github.com/GoAdminGroup/go-admin/modules/db"
-	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
-	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
-	form2 "github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
-	"github.com/GoAdminGroup/go-admin/template"
-	"github.com/GoAdminGroup/go-admin/template/types"
-	"github.com/GoAdminGroup/go-admin/template/types/form"
-	"golang.org/x/crypto/bcrypt"
+	tmpl "html/template"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/GoAdminGroup/go-admin/context"
+	"github.com/GoAdminGroup/go-admin/modules/collection"
+	"github.com/GoAdminGroup/go-admin/modules/config"
+	"github.com/GoAdminGroup/go-admin/modules/db"
+	"github.com/GoAdminGroup/go-admin/modules/db/dialect"
+	errs "github.com/GoAdminGroup/go-admin/modules/errors"
+	"github.com/GoAdminGroup/go-admin/modules/language"
+	"github.com/GoAdminGroup/go-admin/modules/utils"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
+	form2 "github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/parameter"
+	"github.com/GoAdminGroup/go-admin/template"
+	"github.com/GoAdminGroup/go-admin/template/types"
+	"github.com/GoAdminGroup/go-admin/template/types/action"
+	"github.com/GoAdminGroup/go-admin/template/types/form"
+	"github.com/GoAdminGroup/html"
+	"golang.org/x/crypto/bcrypt"
 )
 
-func GetManagerTable() (ManagerTable Table) {
-	ManagerTable = NewDefaultTable(DefaultConfigWithDriver(config.Get().Databases.GetDefault().Driver))
+type SystemTable struct {
+	conn db.Connection
+	c    *config.Config
+}
 
-	info := ManagerTable.GetInfo().AddXssJsFilter().HideFilterArea()
+func NewSystemTable(conn db.Connection, c *config.Config) *SystemTable {
+	return &SystemTable{conn: conn, c: c}
+}
+
+func (s *SystemTable) GetManagerTable(ctx *context.Context) (managerTable Table) {
+	managerTable = NewDefaultTable(DefaultConfigWithDriver(config.GetDatabases().GetDefault().Driver))
+
+	info := managerTable.GetInfo().AddXssJsFilter().HideFilterArea()
+
+	labelModels, _ := s.table("goadmin_role_users").
+		Select("goadmin_roles.name", "user_id").
+		LeftJoin("goadmin_roles", "goadmin_roles.id", "=", "goadmin_role_users.role_id").
+		All()
+	labelCollection := collection.Collection(labelModels)
 
 	info.AddField("ID", "id", db.Int).FieldSortable()
 	info.AddField(lg("Name"), "username", db.Varchar).FieldFilterable()
 	info.AddField(lg("Nickname"), "name", db.Varchar).FieldFilterable()
 	info.AddField(lg("role"), "roles", db.Varchar).
 		FieldDisplay(func(model types.FieldModel) interface{} {
-			labelModels, _ := table("goadmin_role_users").
-				Select("goadmin_roles.name").
-				LeftJoin("goadmin_roles", "goadmin_roles.id", "=", "goadmin_role_users.role_id").
-				Where("user_id", "=", model.ID).
-				All()
+			uid, _ := strconv.Atoi(model.ID)
+			labelCol := labelCollection.Where("user_id", int64(uid))
 
 			labels := template.HTML("")
 			labelTpl := label().SetType("success")
 
-			for key, label := range labelModels {
-				if key == len(labelModels)-1 {
+			for key, label := range labelCol {
+				if key == len(labelCol)-1 {
 					labels += labelTpl.SetContent(template.HTML(label["name"].(string))).GetContent()
 				} else {
 					labels += labelTpl.SetContent(template.HTML(label["name"].(string))).GetContent() + "<br><br>"
@@ -62,88 +83,83 @@ func GetManagerTable() (ManagerTable Table) {
 
 			var ids = interfaces(idArr)
 
-			_, txErr := connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
+			_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
 
-				deleteUserRoleErr := connection().WithTx(tx).
+				deleteUserRoleErr := s.connection().WithTx(tx).
 					Table("goadmin_role_users").
 					WhereIn("user_id", ids).
 					Delete()
 
-				if deleteUserRoleErr != nil && notNoAffectRow(deleteUserRoleErr) {
-					return deleteUserRoleErr, map[string]interface{}{}
+				if db.CheckError(deleteUserRoleErr, db.DELETE) {
+					return deleteUserRoleErr, nil
 				}
 
-				deleteUserPermissionErr := connection().WithTx(tx).
+				deleteUserPermissionErr := s.connection().WithTx(tx).
 					Table("goadmin_user_permissions").
 					WhereIn("user_id", ids).
 					Delete()
 
-				if deleteUserPermissionErr != nil && notNoAffectRow(deleteUserPermissionErr) {
-					return deleteUserPermissionErr, map[string]interface{}{}
+				if db.CheckError(deleteUserPermissionErr, db.DELETE) {
+					return deleteUserPermissionErr, nil
 				}
 
-				deleteUserErr := connection().WithTx(tx).
+				deleteUserErr := s.connection().WithTx(tx).
 					Table("goadmin_users").
 					WhereIn("id", ids).
 					Delete()
 
-				if deleteUserErr != nil {
-					return deleteUserErr, map[string]interface{}{}
+				if db.CheckError(deleteUserErr, db.DELETE) {
+					return deleteUserErr, nil
 				}
 
-				return nil, map[string]interface{}{}
+				return nil, nil
 			})
 
 			return txErr
 		})
 
-	var roles, permissions []map[string]string
-	rolesModel, _ := table("goadmin_roles").Select("id", "slug").All()
-
-	for _, v := range rolesModel {
-		roles = append(roles, map[string]string{
-			"field": v["slug"].(string),
-			"value": strconv.FormatInt(v["id"].(int64), 10),
-		})
-	}
-	permissionsModel, _ := table("goadmin_permissions").Select("id", "slug").All()
-	for _, v := range permissionsModel {
-		permissions = append(permissions, map[string]string{
-			"field": v["slug"].(string),
-			"value": strconv.FormatInt(v["id"].(int64), 10),
-		})
-	}
-
-	formList := ManagerTable.GetForm().AddXssJsFilter()
+	formList := managerTable.GetForm().AddXssJsFilter()
 
 	formList.AddField("ID", "id", db.Int, form.Default).FieldNotAllowEdit().FieldNotAllowAdd()
 	formList.AddField(lg("Name"), "username", db.Varchar, form.Text).
-		FieldHelpMsg(template.HTML(lg("used for login"))).FieldMust()
+		FieldHelpMsg(template.HTML(lg("use for login"))).FieldMust()
 	formList.AddField(lg("Nickname"), "name", db.Varchar, form.Text).
-		FieldHelpMsg(template.HTML(lg("used to display"))).FieldMust()
+		FieldHelpMsg(template.HTML(lg("use to display"))).FieldMust()
 	formList.AddField(lg("Avatar"), "avatar", db.Varchar, form.File)
 	formList.AddField(lg("role"), "role_id", db.Varchar, form.Select).
-		FieldOptions(roles).FieldDisplay(func(model types.FieldModel) interface{} {
-		roleModel, _ := table("goadmin_role_users").Select("role_id").
-			Where("user_id", "=", model.ID).All()
-		var roles []string
-		for _, v := range roleModel {
-			roles = append(roles, strconv.FormatInt(v["role_id"].(int64), 10))
-		}
-		return roles
-	}).FieldHelpMsg(template.HTML(lg("no corresponding options?") + `<a href="/admin/info/roles/new">` +
-		lg("Create here.") + `</a>`))
+		FieldOptionsFromTable("goadmin_roles", "slug", "id").
+		FieldDisplay(func(model types.FieldModel) interface{} {
+			var roles []string
+
+			if model.ID == "" {
+				return roles
+			}
+			roleModel, _ := s.table("goadmin_role_users").Select("role_id").
+				Where("user_id", "=", model.ID).All()
+			for _, v := range roleModel {
+				roles = append(roles, strconv.FormatInt(v["role_id"].(int64), 10))
+			}
+			return roles
+		}).FieldHelpMsg(template.HTML(lg("no corresponding options?")) +
+		link("/admin/info/roles/new", "Create here."))
+
 	formList.AddField(lg("permission"), "permission_id", db.Varchar, form.Select).
-		FieldOptions(permissions).FieldDisplay(func(model types.FieldModel) interface{} {
-		permissionModel, _ := table("goadmin_user_permissions").
-			Select("permission_id").Where("user_id", "=", model.ID).All()
-		var permissions []string
-		for _, v := range permissionModel {
-			permissions = append(permissions, strconv.FormatInt(v["permission_id"].(int64), 10))
-		}
-		return permissions
-	}).FieldHelpMsg(template.HTML(lg("no corresponding options?") + `<a href="/admin/info/permission/new">` +
-		lg("Create here.") + `</a>`))
+		FieldOptionsFromTable("goadmin_permissions", "slug", "id").
+		FieldDisplay(func(model types.FieldModel) interface{} {
+			var permissions []string
+
+			if model.ID == "" {
+				return permissions
+			}
+			permissionModel, _ := s.table("goadmin_user_permissions").
+				Select("permission_id").Where("user_id", "=", model.ID).All()
+			for _, v := range permissionModel {
+				permissions = append(permissions, strconv.FormatInt(v["permission_id"].(int64), 10))
+			}
+			return permissions
+		}).FieldHelpMsg(template.HTML(lg("no corresponding options?")) +
+		link("/admin/info/permission/new", "Create here."))
+
 	formList.AddField(lg("password"), "password", db.Varchar, form.Password).
 		FieldDisplay(func(value types.FieldModel) interface{} {
 			return ""
@@ -160,7 +176,7 @@ func GetManagerTable() (ManagerTable Table) {
 			return errors.New("username and password can not be empty")
 		}
 
-		user := models.UserWithId(values.Get("id")).SetConn(conn())
+		user := models.UserWithId(values.Get("id")).SetConn(s.conn)
 
 		password := values.Get("password")
 
@@ -173,19 +189,44 @@ func GetManagerTable() (ManagerTable Table) {
 			password = encodePassword([]byte(values.Get("password")))
 		}
 
-		user.Update(values.Get("username"), password, values.Get("name"), values.Get("avatar"))
+		_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
 
-		user.DeleteRoles()
-		for i := 0; i < len(values["role_id[]"]); i++ {
-			user.AddRole(values["role_id[]"][i])
-		}
+			_, updateUserErr := user.WithTx(tx).Update(values.Get("username"), password, values.Get("name"), values.Get("avatar"))
 
-		user.DeletePermissions()
-		for i := 0; i < len(values["permission_id[]"]); i++ {
-			user.AddPermission(values["permission_id[]"][i])
-		}
+			if db.CheckError(updateUserErr, db.UPDATE) {
+				return updateUserErr, nil
+			}
 
-		return nil
+			delRoleErr := user.WithTx(tx).DeleteRoles()
+
+			if db.CheckError(delRoleErr, db.DELETE) {
+				return delRoleErr, nil
+			}
+
+			for i := 0; i < len(values["role_id[]"]); i++ {
+				_, addRoleErr := user.WithTx(tx).AddRole(values["role_id[]"][i])
+				if db.CheckError(addRoleErr, db.INSERT) {
+					return addRoleErr, nil
+				}
+			}
+
+			delPermissionErr := user.WithTx(tx).DeletePermissions()
+
+			if db.CheckError(delPermissionErr, db.DELETE) {
+				return delPermissionErr, nil
+			}
+
+			for i := 0; i < len(values["permission_id[]"]); i++ {
+				_, addPermissionErr := user.WithTx(tx).AddPermission(values["permission_id[]"][i])
+				if db.CheckError(addPermissionErr, db.INSERT) {
+					return addPermissionErr, nil
+				}
+			}
+
+			return nil, nil
+		})
+
+		return txErr
 	})
 	formList.SetInsertFn(func(values form2.Values) error {
 		if values.IsEmpty("name", "username", "password") {
@@ -198,40 +239,54 @@ func GetManagerTable() (ManagerTable Table) {
 			return errors.New("password does not match")
 		}
 
-		user := models.User().SetConn(conn()).New(values.Get("username"),
-			encodePassword([]byte(values.Get("password"))),
-			values.Get("name"),
-			values.Get("avatar"))
+		_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
 
-		// TODO: Add transaction support.
+			user, createUserErr := models.User().WithTx(tx).SetConn(s.conn).New(values.Get("username"),
+				encodePassword([]byte(values.Get("password"))),
+				values.Get("name"),
+				values.Get("avatar"))
 
-		for i := 0; i < len(values["role_id[]"]); i++ {
-			user.AddRole(values["role_id[]"][i])
-		}
+			if db.CheckError(createUserErr, db.INSERT) {
+				return createUserErr, nil
+			}
 
-		for i := 0; i < len(values["permission_id[]"]); i++ {
-			user.AddPermission(values["permission_id[]"][i])
-		}
-		return nil
+			for i := 0; i < len(values["role_id[]"]); i++ {
+				_, addRoleErr := user.WithTx(tx).AddRole(values["role_id[]"][i])
+				if db.CheckError(addRoleErr, db.INSERT) {
+					return addRoleErr, nil
+				}
+			}
+
+			for i := 0; i < len(values["permission_id[]"]); i++ {
+				_, addPermissionErr := user.WithTx(tx).AddPermission(values["permission_id[]"][i])
+				if db.CheckError(addPermissionErr, db.INSERT) {
+					return addPermissionErr, nil
+				}
+			}
+
+			return nil, nil
+		})
+		return txErr
 	})
 
-	detail := ManagerTable.GetDetail()
+	detail := managerTable.GetDetail()
 	detail.AddField("ID", "id", db.Int)
 	detail.AddField(lg("Name"), "username", db.Varchar)
-	detail.AddField(lg("Avatar"), "avatar", db.Varchar).FieldDisplay(func(model types.FieldModel) interface{} {
-		if model.Value == "" || config.Get().Store.Prefix == "" {
-			model.Value = config.Get().Url("/assets/dist/img/avatar04.png")
-		} else {
-			model.Value = "/" + config.Get().Store.Prefix + "/" + model.Value
-		}
-		return template.Default().Image().
-			SetSrc(template.HTML(model.Value)).
-			SetHeight("120").SetWidth("120").WithModal().GetContent()
-	})
+	detail.AddField(lg("Avatar"), "avatar", db.Varchar).
+		FieldDisplay(func(model types.FieldModel) interface{} {
+			if model.Value == "" || config.GetStore().Prefix == "" {
+				model.Value = config.Url("/assets/dist/img/avatar04.png")
+			} else {
+				model.Value = config.GetStore().URL(model.Value)
+			}
+			return template.Default().Image().
+				SetSrc(template.HTML(model.Value)).
+				SetHeight("120").SetWidth("120").WithModal().GetContent()
+		})
 	detail.AddField(lg("Nickname"), "name", db.Varchar)
 	detail.AddField(lg("role"), "roles", db.Varchar).
 		FieldDisplay(func(model types.FieldModel) interface{} {
-			labelModels, _ := table("goadmin_role_users").
+			labelModels, _ := s.table("goadmin_role_users").
 				Select("goadmin_roles.name").
 				LeftJoin("goadmin_roles", "goadmin_roles.id", "=", "goadmin_role_users.role_id").
 				Where("user_id", "=", model.ID).
@@ -256,7 +311,7 @@ func GetManagerTable() (ManagerTable Table) {
 		})
 	detail.AddField(lg("permission"), "roles", db.Varchar).
 		FieldDisplay(func(model types.FieldModel) interface{} {
-			permissionModel, _ := table("goadmin_user_permissions").
+			permissionModel, _ := s.table("goadmin_user_permissions").
 				Select("goadmin_permissions.name").
 				LeftJoin("goadmin_permissions", "goadmin_permissions.id", "=", "goadmin_user_permissions.permission_id").
 				Where("user_id", "=", model.ID).
@@ -281,26 +336,28 @@ func GetManagerTable() (ManagerTable Table) {
 	return
 }
 
-func GetNormalManagerTable() (ManagerTable Table) {
-	ManagerTable = NewDefaultTable(DefaultConfigWithDriver(config.Get().Databases.GetDefault().Driver))
+func (s *SystemTable) GetNormalManagerTable(ctx *context.Context) (managerTable Table) {
+	managerTable = NewDefaultTable(DefaultConfigWithDriver(config.GetDatabases().GetDefault().Driver))
 
-	info := ManagerTable.GetInfo().AddXssJsFilter().HideFilterArea()
+	info := managerTable.GetInfo().AddXssJsFilter().HideFilterArea()
+
+	labelModels, _ := s.table("goadmin_role_users").
+		Select("goadmin_roles.name", "user_id").
+		LeftJoin("goadmin_roles", "goadmin_roles.id", "=", "goadmin_role_users.role_id").
+		All()
+	labelCollection := collection.Collection(labelModels)
 
 	info.AddField("ID", "id", db.Int).FieldSortable()
 	info.AddField(lg("Name"), "username", db.Varchar).FieldFilterable()
 	info.AddField(lg("Nickname"), "name", db.Varchar).FieldFilterable()
 	info.AddField(lg("role"), "roles", db.Varchar).
 		FieldDisplay(func(model types.FieldModel) interface{} {
-			labelModels, _ := table("goadmin_role_users").
-				Select("goadmin_roles.name").
-				LeftJoin("goadmin_roles", "goadmin_roles.id", "=", "goadmin_role_users.role_id").
-				Where("user_id", "=", model.ID).
-				All()
+			labelCol := labelCollection.Where("user_id", model.ID)
 
 			labels := template.HTML("")
 			labelTpl := label().SetType("success")
 
-			for key, label := range labelModels {
+			for key, label := range labelCol {
 				if key == len(labelModels)-1 {
 					labels += labelTpl.SetContent(template.HTML(label["name"].(string))).GetContent()
 				} else {
@@ -324,68 +381,51 @@ func GetNormalManagerTable() (ManagerTable Table) {
 
 			var ids = interfaces(idArr)
 
-			_, txErr := connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
+			_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
 
-				deleteUserRoleErr := connection().WithTx(tx).
+				deleteUserRoleErr := s.connection().WithTx(tx).
 					Table("goadmin_role_users").
 					WhereIn("user_id", ids).
 					Delete()
 
-				if deleteUserRoleErr != nil && notNoAffectRow(deleteUserRoleErr) {
-					return deleteUserRoleErr, map[string]interface{}{}
+				if db.CheckError(deleteUserRoleErr, db.DELETE) {
+					return deleteUserRoleErr, nil
 				}
 
-				deleteUserPermissionErr := connection().WithTx(tx).
+				deleteUserPermissionErr := s.connection().WithTx(tx).
 					Table("goadmin_user_permissions").
 					WhereIn("user_id", ids).
 					Delete()
 
-				if deleteUserPermissionErr != nil && notNoAffectRow(deleteUserPermissionErr) {
-					return deleteUserPermissionErr, map[string]interface{}{}
+				if db.CheckError(deleteUserPermissionErr, db.DELETE) {
+					return deleteUserPermissionErr, nil
 				}
 
-				deleteUserErr := connection().WithTx(tx).
+				deleteUserErr := s.connection().WithTx(tx).
 					Table("goadmin_users").
 					WhereIn("id", ids).
 					Delete()
 
-				if deleteUserErr != nil {
-					return deleteUserErr, map[string]interface{}{}
+				if db.CheckError(deleteUserErr, db.DELETE) {
+					return deleteUserErr, nil
 				}
 
-				return nil, map[string]interface{}{}
+				return nil, nil
 			})
 
 			return txErr
 		})
 
-	var roles, permissions []map[string]string
-	rolesModel, _ := table("goadmin_roles").Select("id", "slug").All()
-
-	for _, v := range rolesModel {
-		roles = append(roles, map[string]string{
-			"field": v["slug"].(string),
-			"value": strconv.FormatInt(v["id"].(int64), 10),
-		})
-	}
-	permissionsModel, _ := table("goadmin_permissions").Select("id", "slug").All()
-	for _, v := range permissionsModel {
-		permissions = append(permissions, map[string]string{
-			"field": v["slug"].(string),
-			"value": strconv.FormatInt(v["id"].(int64), 10),
-		})
-	}
-
-	formList := ManagerTable.GetForm().AddXssJsFilter()
+	formList := managerTable.GetForm().AddXssJsFilter()
 
 	formList.AddField("ID", "id", db.Int, form.Default).FieldNotAllowEdit().FieldNotAllowAdd()
-	formList.AddField(lg("Name"), "username", db.Varchar, form.Text).FieldHelpMsg(template.HTML(lg("used for login"))).FieldMust()
-	formList.AddField(lg("Nickname"), "name", db.Varchar, form.Text).FieldHelpMsg(template.HTML(lg("used to display"))).FieldMust()
+	formList.AddField(lg("Name"), "username", db.Varchar, form.Text).FieldHelpMsg(template.HTML(lg("use for login"))).FieldMust()
+	formList.AddField(lg("Nickname"), "name", db.Varchar, form.Text).FieldHelpMsg(template.HTML(lg("use to display"))).FieldMust()
 	formList.AddField(lg("Avatar"), "avatar", db.Varchar, form.File)
 	formList.AddField(lg("password"), "password", db.Varchar, form.Password).
 		FieldDisplay(func(value types.FieldModel) interface{} {
 			return ""
-		}).FieldMust()
+		})
 	formList.AddField(lg("confirm password"), "password_again", db.Varchar, form.Password).
 		FieldDisplay(func(value types.FieldModel) interface{} {
 			return ""
@@ -398,10 +438,10 @@ func GetNormalManagerTable() (ManagerTable Table) {
 			return errors.New("username and password can not be empty")
 		}
 
-		user := models.UserWithId(values.Get("id")).SetConn(conn())
+		user := models.UserWithId(values.Get("id")).SetConn(s.conn)
 
 		if values.Has("permission", "role") {
-			return errors.New("no permission")
+			return errors.New(errs.NoPermission)
 		}
 
 		password := values.Get("password")
@@ -415,7 +455,11 @@ func GetNormalManagerTable() (ManagerTable Table) {
 			password = encodePassword([]byte(values.Get("password")))
 		}
 
-		user.Update(values.Get("username"), password, values.Get("name"), values.Get("avatar"))
+		_, updateUserErr := user.Update(values.Get("username"), password, values.Get("name"), values.Get("avatar"))
+
+		if db.CheckError(updateUserErr, db.UPDATE) {
+			return updateUserErr
+		}
 
 		return nil
 	})
@@ -431,13 +475,17 @@ func GetNormalManagerTable() (ManagerTable Table) {
 		}
 
 		if values.Has("permission", "role") {
-			return errors.New("no permission")
+			return errors.New(errs.NoPermission)
 		}
 
-		models.User().SetConn(conn()).New(values.Get("username"),
+		_, createUserErr := models.User().SetConn(s.conn).New(values.Get("username"),
 			encodePassword([]byte(values.Get("password"))),
 			values.Get("name"),
 			values.Get("avatar"))
+
+		if db.CheckError(createUserErr, db.INSERT) {
+			return createUserErr
+		}
 
 		return nil
 	})
@@ -445,10 +493,10 @@ func GetNormalManagerTable() (ManagerTable Table) {
 	return
 }
 
-func GetPermissionTable() (PermissionTable Table) {
-	PermissionTable = NewDefaultTable(DefaultConfigWithDriver(config.Get().Databases.GetDefault().Driver))
+func (s *SystemTable) GetPermissionTable(ctx *context.Context) (permissionTable Table) {
+	permissionTable = NewDefaultTable(DefaultConfigWithDriver(config.GetDatabases().GetDefault().Driver))
 
-	info := PermissionTable.GetInfo().AddXssJsFilter().HideFilterArea()
+	info := permissionTable.GetInfo().AddXssJsFilter().HideFilterArea()
 
 	info.AddField("ID", "id", db.Int).FieldSortable()
 	info.AddField(lg("permission"), "name", db.Varchar).FieldFilterable()
@@ -482,62 +530,60 @@ func GetPermissionTable() (PermissionTable Table) {
 
 			var ids = interfaces(idArr)
 
-			_, txErr := connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
+			_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
 
-				deleteRolePermissionErr := connection().WithTx(tx).
+				deleteRolePermissionErr := s.connection().WithTx(tx).
 					Table("goadmin_role_permissions").
 					WhereIn("permission_id", ids).
 					Delete()
 
-				if deleteRolePermissionErr != nil && notNoAffectRow(deleteRolePermissionErr) {
-					return deleteRolePermissionErr, map[string]interface{}{}
+				if db.CheckError(deleteRolePermissionErr, db.DELETE) {
+					return deleteRolePermissionErr, nil
 				}
 
-				deleteUserPermissionErr := connection().WithTx(tx).
+				deleteUserPermissionErr := s.connection().WithTx(tx).
 					Table("goadmin_user_permissions").
 					WhereIn("permission_id", ids).
 					Delete()
 
-				if deleteUserPermissionErr != nil && notNoAffectRow(deleteUserPermissionErr) {
-					return deleteUserPermissionErr, map[string]interface{}{}
+				if db.CheckError(deleteUserPermissionErr, db.DELETE) {
+					return deleteUserPermissionErr, nil
 				}
 
-				deletePermissionsErr := connection().WithTx(tx).
+				deletePermissionsErr := s.connection().WithTx(tx).
 					Table("goadmin_permissions").
 					WhereIn("id", ids).
 					Delete()
 
 				if deletePermissionsErr != nil {
-					return deletePermissionsErr, map[string]interface{}{}
+					return deletePermissionsErr, nil
 				}
 
-				return nil, map[string]interface{}{}
+				return nil, nil
 			})
 
 			return txErr
 		})
 
-	formList := PermissionTable.GetForm().AddXssJsFilter()
+	formList := permissionTable.GetForm().AddXssJsFilter()
 
 	formList.AddField("ID", "id", db.Int, form.Default).FieldNotAllowEdit().FieldNotAllowAdd()
 	formList.AddField(lg("permission"), "name", db.Varchar, form.Text).FieldMust()
 	formList.AddField(lg("slug"), "slug", db.Varchar, form.Text).FieldHelpMsg(template.HTML(lg("should be unique"))).FieldMust()
 	formList.AddField(lg("method"), "http_method", db.Varchar, form.Select).
-		FieldOptions([]map[string]string{
-			{"value": "GET", "field": "GET"},
-			{"value": "PUT", "field": "PUT"},
-			{"value": "POST", "field": "POST"},
-			{"value": "DELETE", "field": "DELETE"},
-			{"value": "PATCH", "field": "PATCH"},
-			{"value": "OPTIONS", "field": "OPTIONS"},
-			{"value": "HEAD", "field": "HEAD"},
+		FieldOptions(types.FieldOptions{
+			{Value: "GET", Text: "GET"},
+			{Value: "PUT", Text: "PUT"},
+			{Value: "POST", Text: "POST"},
+			{Value: "DELETE", Text: "DELETE"},
+			{Value: "PATCH", Text: "PATCH"},
+			{Value: "OPTIONS", Text: "OPTIONS"},
+			{Value: "HEAD", Text: "HEAD"},
 		}).
-		FieldOptionExt(map[string]interface{}{"allowClear": true}).
 		FieldDisplay(func(model types.FieldModel) interface{} {
 			return strings.Split(model.Value, ",")
 		}).
-		FieldPostFilterFn(func(model types.PostFieldModel) string {
-			fmt.Println("model.Value", model.Value)
+		FieldPostFilterFn(func(model types.PostFieldModel) interface{} {
 			return strings.Join(model.Value, ",")
 		}).
 		FieldHelpMsg(template.HTML(lg("all method if empty")))
@@ -555,12 +601,12 @@ func GetPermissionTable() (PermissionTable Table) {
 				return errors.New("slug or http_path or name should not be empty")
 			}
 
-			if models.Permission().SetConn(conn()).IsSlugExist(values.Get("slug"), values.Get("id")) {
+			if models.Permission().SetConn(s.conn).IsSlugExist(values.Get("slug"), values.Get("id")) {
 				return errors.New("slug exists")
 			}
 			return nil
 		}).SetPostHook(func(values form2.Values) error {
-		_, err := connection().Table("goadmin_permissions").
+		_, err := s.connection().Table("goadmin_permissions").
 			Where("id", "=", values.Get("id")).Update(dialect.H{
 			"updated_at": time.Now().Format("2006-01-02 15:04:05"),
 		})
@@ -570,10 +616,10 @@ func GetPermissionTable() (PermissionTable Table) {
 	return
 }
 
-func GetRolesTable() (RolesTable Table) {
-	RolesTable = NewDefaultTable(DefaultConfigWithDriver(config.Get().Databases.GetDefault().Driver))
+func (s *SystemTable) GetRolesTable(ctx *context.Context) (roleTable Table) {
+	roleTable = NewDefaultTable(DefaultConfigWithDriver(config.GetDatabases().GetDefault().Driver))
 
-	info := RolesTable.GetInfo().AddXssJsFilter().HideFilterArea()
+	info := roleTable.GetInfo().AddXssJsFilter().HideFilterArea()
 
 	info.AddField("ID", "id", db.Int).FieldSortable()
 	info.AddField(lg("role"), "name", db.Varchar).FieldFilterable()
@@ -588,78 +634,73 @@ func GetRolesTable() (RolesTable Table) {
 
 			var ids = interfaces(idArr)
 
-			_, txErr := connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
+			_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
 
-				deleteRoleUserErr := connection().WithTx(tx).
+				deleteRoleUserErr := s.connection().WithTx(tx).
 					Table("goadmin_role_users").
 					WhereIn("role_id", ids).
 					Delete()
 
-				if deleteRoleUserErr != nil && notNoAffectRow(deleteRoleUserErr) {
-					return deleteRoleUserErr, map[string]interface{}{}
+				if db.CheckError(deleteRoleUserErr, db.DELETE) {
+					return deleteRoleUserErr, nil
 				}
 
-				deleteRoleMenuErr := connection().WithTx(tx).
+				deleteRoleMenuErr := s.connection().WithTx(tx).
 					Table("goadmin_role_menu").
 					WhereIn("role_id", ids).
 					Delete()
 
-				if deleteRoleMenuErr != nil && notNoAffectRow(deleteRoleMenuErr) {
-					return deleteRoleMenuErr, map[string]interface{}{}
+				if db.CheckError(deleteRoleMenuErr, db.DELETE) {
+					return deleteRoleMenuErr, nil
 				}
 
-				deleteRolePermissionErr := connection().WithTx(tx).
+				deleteRolePermissionErr := s.connection().WithTx(tx).
 					Table("goadmin_role_permissions").
 					WhereIn("role_id", ids).
 					Delete()
 
-				if deleteRolePermissionErr != nil && notNoAffectRow(deleteRolePermissionErr) {
-					return deleteRolePermissionErr, map[string]interface{}{}
+				if db.CheckError(deleteRolePermissionErr, db.DELETE) {
+					return deleteRolePermissionErr, nil
 				}
 
-				deleteRolesErr := connection().WithTx(tx).
+				deleteRolesErr := s.connection().WithTx(tx).
 					Table("goadmin_roles").
 					WhereIn("id", ids).
 					Delete()
 
-				if deleteRolesErr != nil {
-					return deleteRolesErr, map[string]interface{}{}
+				if db.CheckError(deleteRolesErr, db.DELETE) {
+					return deleteRolesErr, nil
 				}
 
-				return nil, map[string]interface{}{}
+				return nil, nil
 			})
 
 			return txErr
 		})
 
-	formList := RolesTable.GetForm().AddXssJsFilter()
-
-	permissionsModel, _ := table("goadmin_permissions").Select("id", "name").All()
-	var permissions = make([]map[string]string, len(permissionsModel))
-
-	for k, v := range permissionsModel {
-		permissions[k] = map[string]string{
-			"field": v["name"].(string),
-			"value": strconv.FormatInt(v["id"].(int64), 10),
-		}
-	}
+	formList := roleTable.GetForm().AddXssJsFilter()
 
 	formList.AddField("ID", "id", db.Int, form.Default).FieldNotAllowEdit().FieldNotAllowAdd()
 	formList.AddField(lg("role"), "name", db.Varchar, form.Text).FieldMust()
 	formList.AddField(lg("slug"), "slug", db.Varchar, form.Text).FieldHelpMsg(template.HTML(lg("should be unique"))).FieldMust()
 	formList.AddField(lg("permission"), "permission_id", db.Varchar, form.SelectBox).
-		FieldOptions(permissions).FieldDisplay(func(model types.FieldModel) interface{} {
-		perModel, _ := table("goadmin_role_permissions").
-			Select("permission_id").
-			Where("role_id", "=", model.ID).
-			All()
-		var permissions = make([]string, len(perModel))
-		for k, v := range perModel {
-			permissions[k] = strconv.FormatInt(v["permission_id"].(int64), 10)
-		}
-		return permissions
-	}).FieldHelpMsg(template.HTML(lg("no corresponding options?") + `<a href="/admin/info/permission/new">` +
-		lg("Create here.") + `</a>`))
+		FieldOptionsFromTable("goadmin_permissions", "name", "id").
+		FieldDisplay(func(model types.FieldModel) interface{} {
+			var permissions = make([]string, 0)
+
+			if model.ID == "" {
+				return permissions
+			}
+			perModel, _ := s.table("goadmin_role_permissions").
+				Select("permission_id").
+				Where("role_id", "=", model.ID).
+				All()
+			for _, v := range perModel {
+				permissions = append(permissions, strconv.FormatInt(v["permission_id"].(int64), 10))
+			}
+			return permissions
+		}).FieldHelpMsg(template.HTML(lg("no corresponding options?")) +
+		link("/admin/info/permission/new", "Create here."))
 
 	formList.AddField(lg("updatedAt"), "updated_at", db.Timestamp, form.Default).FieldNotAllowAdd()
 	formList.AddField(lg("createdAt"), "created_at", db.Timestamp, form.Default).FieldNotAllowAdd()
@@ -670,47 +711,75 @@ func GetRolesTable() (RolesTable Table) {
 
 	formList.SetUpdateFn(func(values form2.Values) error {
 
-		if models.Role().SetConn(conn()).IsSlugExist(values.Get("slug"), values.Get("id")) {
+		if models.Role().SetConn(s.conn).IsSlugExist(values.Get("slug"), values.Get("id")) {
 			return errors.New("slug exists")
 		}
 
-		role := models.RoleWithId(values.Get("id")).SetConn(conn())
+		role := models.RoleWithId(values.Get("id")).SetConn(s.conn)
 
-		role.Update(values.Get("name"), values.Get("slug"))
+		_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
 
-		role.DeletePermissions()
-		for i := 0; i < len(values["permission_id[]"]); i++ {
-			role.AddPermission(values["permission_id[]"][i])
-		}
+			_, updateRoleErr := role.WithTx(tx).Update(values.Get("name"), values.Get("slug"))
 
-		return nil
+			if db.CheckError(updateRoleErr, db.UPDATE) {
+				return updateRoleErr, nil
+			}
+
+			delPermissionErr := role.WithTx(tx).DeletePermissions()
+
+			if db.CheckError(delPermissionErr, db.DELETE) {
+				return delPermissionErr, nil
+			}
+
+			for i := 0; i < len(values["permission_id[]"]); i++ {
+				_, addPermissionErr := role.WithTx(tx).AddPermission(values["permission_id[]"][i])
+				if db.CheckError(addPermissionErr, db.INSERT) {
+					return addPermissionErr, nil
+				}
+			}
+
+			return nil, nil
+		})
+
+		return txErr
 	})
 
 	formList.SetInsertFn(func(values form2.Values) error {
 
-		if models.Role().SetConn(conn()).IsSlugExist(values.Get("slug"), "") {
+		if models.Role().SetConn(s.conn).IsSlugExist(values.Get("slug"), "") {
 			return errors.New("slug exists")
 		}
 
-		role := models.Role().SetConn(conn()).New(values.Get("name"), values.Get("slug"))
+		_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
+			role, createRoleErr := models.Role().WithTx(tx).SetConn(s.conn).New(values.Get("name"), values.Get("slug"))
 
-		for i := 0; i < len(values["permission_id[]"]); i++ {
-			role.AddPermission(values["permission_id[]"][i])
-		}
+			if db.CheckError(createRoleErr, db.INSERT) {
+				return createRoleErr, nil
+			}
 
-		return nil
+			for i := 0; i < len(values["permission_id[]"]); i++ {
+				_, addPermissionErr := role.WithTx(tx).AddPermission(values["permission_id[]"][i])
+				if db.CheckError(addPermissionErr, db.INSERT) {
+					return addPermissionErr, nil
+				}
+			}
+
+			return nil, nil
+		})
+
+		return txErr
 	})
 
 	return
 }
 
-func GetOpTable() (OpTable Table) {
-	OpTable = NewDefaultTable(Config{
-		Driver:     config.Get().Databases.GetDefault().Driver,
+func (s *SystemTable) GetOpTable(ctx *context.Context) (opTable Table) {
+	opTable = NewDefaultTable(Config{
+		Driver:     config.GetDatabases().GetDefault().Driver,
 		CanAdd:     false,
 		Editable:   false,
 		Deletable:  false,
-		Exportable: false,
+		Exportable: true,
 		Connection: "default",
 		PrimaryKey: PrimaryKey{
 			Type: db.Int,
@@ -718,22 +787,51 @@ func GetOpTable() (OpTable Table) {
 		},
 	})
 
-	info := OpTable.GetInfo().AddXssJsFilter().HideFilterArea()
+	info := opTable.GetInfo().AddXssJsFilter().
+		HideFilterArea().HideDeleteButton().HideDetailButton().HideEditButton().HideNewButton()
 
 	info.AddField("ID", "id", db.Int).FieldSortable()
-	info.AddField(lg("userID"), "user_id", db.Int).FieldFilterable()
+	info.AddField("userID", "user_id", db.Int).FieldHide()
+	info.AddField(lg("user"), "name", db.Varchar).FieldJoin(types.Join{
+		Table:     "goadmin_users",
+		JoinField: "id",
+		Field:     "user_id",
+	}).FieldDisplay(func(value types.FieldModel) interface{} {
+		return template.Default().
+			Link().
+			SetURL(config.Url("/info/manager/detail?__goadmin_detail_pk=") + strconv.Itoa(int(value.Row["user_id"].(int64)))).
+			SetContent(template.HTML(value.Value)).
+			OpenInNewTab().
+			SetTabTitle("Manager Detail").
+			GetContent()
+	}).FieldFilterable()
 	info.AddField(lg("path"), "path", db.Varchar).FieldFilterable()
 	info.AddField(lg("method"), "method", db.Varchar).FieldFilterable()
 	info.AddField(lg("ip"), "ip", db.Varchar).FieldFilterable()
-	info.AddField(lg("content"), "input", db.Varchar)
+	info.AddField(lg("content"), "input", db.Text).FieldWidth(230)
 	info.AddField(lg("createdAt"), "created_at", db.Timestamp)
-	info.AddField(lg("updatedAt"), "updated_at", db.Timestamp)
+
+	users, _ := s.table("goadmin_users").Select("id", "name").All()
+	options := make(types.FieldOptions, len(users))
+	for k, user := range users {
+		options[k].Value = fmt.Sprintf("%v", user["id"])
+		options[k].Text = fmt.Sprintf("%v", user["name"])
+	}
+	info.AddSelectBox(language.Get("user"), options, action.FieldFilter("user_id"))
+	info.AddSelectBox(language.Get("method"), types.FieldOptions{
+		{Value: "GET", Text: "GET"},
+		{Value: "POST", Text: "POST"},
+		{Value: "OPTIONS", Text: "OPTIONS"},
+		{Value: "PUT", Text: "PUT"},
+		{Value: "HEAD", Text: "HEAD"},
+		{Value: "DELETE", Text: "DELETE"},
+	}, action.FieldFilter("method"))
 
 	info.SetTable("goadmin_operation_log").
 		SetTitle(lg("operation log")).
 		SetDescription(lg("operation log"))
 
-	formList := OpTable.GetForm().AddXssJsFilter()
+	formList := opTable.GetForm().AddXssJsFilter()
 
 	formList.AddField("ID", "id", db.Int, form.Default).FieldNotAllowEdit().FieldNotAllowAdd()
 	formList.AddField(lg("userID"), "user_id", db.Int, form.Text)
@@ -751,10 +849,10 @@ func GetOpTable() (OpTable Table) {
 	return
 }
 
-func GetMenuTable() (MenuTable Table) {
-	MenuTable = NewDefaultTable(DefaultConfigWithDriver(config.Get().Databases.GetDefault().Driver))
+func (s *SystemTable) GetMenuTable(ctx *context.Context) (menuTable Table) {
+	menuTable = NewDefaultTable(DefaultConfigWithDriver(config.GetDatabases().GetDefault().Driver))
 
-	info := MenuTable.GetInfo().AddXssJsFilter().HideFilterArea()
+	info := menuTable.GetInfo().AddXssJsFilter().HideFilterArea()
 
 	info.AddField("ID", "id", db.Int).FieldSortable()
 	info.AddField(lg("parent"), "parent_id", db.Int)
@@ -773,24 +871,24 @@ func GetMenuTable() (MenuTable Table) {
 
 			var ids = interfaces(idArr)
 
-			_, txErr := connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
+			_, txErr := s.connection().WithTransaction(func(tx *sql.Tx) (e error, i map[string]interface{}) {
 
-				deleteRoleMenuErr := connection().WithTx(tx).
+				deleteRoleMenuErr := s.connection().WithTx(tx).
 					Table("goadmin_role_menu").
 					WhereIn("menu_id", ids).
 					Delete()
 
-				if deleteRoleMenuErr != nil && notNoAffectRow(deleteRoleMenuErr) {
-					return deleteRoleMenuErr, map[string]interface{}{}
+				if db.CheckError(deleteRoleMenuErr, db.DELETE) {
+					return deleteRoleMenuErr, nil
 				}
 
-				deleteMenusErr := connection().WithTx(tx).
+				deleteMenusErr := s.connection().WithTx(tx).
 					Table("goadmin_menu").
 					WhereIn("id", ids).
 					Delete()
 
-				if deleteMenusErr != nil {
-					return deleteMenusErr, map[string]interface{}{}
+				if db.CheckError(deleteMenusErr, db.DELETE) {
+					return deleteMenusErr, nil
 				}
 
 				return nil, map[string]interface{}{}
@@ -799,59 +897,52 @@ func GetMenuTable() (MenuTable Table) {
 			return txErr
 		})
 
-	var roles, parents []map[string]string
-	rolesModel, _ := table("goadmin_roles").Select("id", "slug").All()
-
-	for _, v := range rolesModel {
-		roles = append(roles, map[string]string{
-			"field": v["slug"].(string),
-			"value": strconv.FormatInt(v["id"].(int64), 10),
-		})
-	}
-
-	parentsModel, _ := table("goadmin_menu").
-		Select("id", "title").
-		Where("id", ">", 0).
-		OrderBy("order", "asc").
-		All()
-
-	for _, v := range parentsModel {
-		parents = append(parents, map[string]string{
-			"field": v["title"].(string),
-			"value": strconv.FormatInt(v["id"].(int64), 10),
-		})
-	}
-	parents = append([]map[string]string{{
-		"field": "root",
-		"value": "0",
-	}}, parents...)
-
-	formList := MenuTable.GetForm().AddXssJsFilter()
+	formList := menuTable.GetForm().AddXssJsFilter()
 	formList.AddField("ID", "id", db.Int, form.Default).FieldNotAllowEdit().FieldNotAllowAdd()
 	formList.AddField(lg("parent"), "parent_id", db.Int, form.SelectSingle).
-		FieldOptions(parents).FieldDisplay(func(model types.FieldModel) interface{} {
-		menuModel, _ := table("goadmin_menu").Select("parent_id").Find(model.ID)
+		FieldOptionsFromTable("goadmin_menu", "title", "id", func(sql *db.SQL) *db.SQL {
+			return sql.Where("parent_id", "=", 0).OrderBy("order", "asc")
+		}).
+		FieldOptionsTableProcessFn(func(options types.FieldOptions) types.FieldOptions {
+			return append([]types.FieldOption{{
+				Text:  "root",
+				Value: "0",
+			}}, options...)
+		}).
+		FieldDisplay(func(model types.FieldModel) interface{} {
+			var menuItem []string
 
-		var menuItem []string
-		menuItem = append(menuItem, strconv.FormatInt(menuModel["parent_id"].(int64), 10))
-		return menuItem
-	})
+			if model.ID == "" {
+				return menuItem
+			}
+
+			menuModel, _ := s.table("goadmin_menu").Select("parent_id").Find(model.ID)
+			menuItem = append(menuItem, strconv.FormatInt(menuModel["parent_id"].(int64), 10))
+			return menuItem
+		})
 	formList.AddField(lg("menu name"), "title", db.Varchar, form.Text).FieldMust()
 	formList.AddField(lg("header"), "header", db.Varchar, form.Text)
 	formList.AddField(lg("icon"), "icon", db.Varchar, form.IconPicker)
 	formList.AddField(lg("uri"), "uri", db.Varchar, form.Text)
 	formList.AddField(lg("role"), "roles", db.Int, form.Select).
-		FieldOptions(roles).FieldDisplay(func(model types.FieldModel) interface{} {
-		roleModel, _ := table("goadmin_role_menu").
-			Select("role_id").
-			Where("menu_id", "=", model.ID).
-			All()
-		var roles []string
-		for _, v := range roleModel {
-			roles = append(roles, strconv.FormatInt(v["role_id"].(int64), 10))
-		}
-		return roles
-	})
+		FieldOptionsFromTable("goadmin_roles", "slug", "id").
+		FieldDisplay(func(model types.FieldModel) interface{} {
+			var roles []string
+
+			if model.ID == "" {
+				return roles
+			}
+
+			roleModel, _ := s.table("goadmin_role_menu").
+				Select("role_id").
+				Where("menu_id", "=", model.ID).
+				All()
+
+			for _, v := range roleModel {
+				roles = append(roles, strconv.FormatInt(v["role_id"].(int64), 10))
+			}
+			return roles
+		})
 
 	formList.AddField(lg("updatedAt"), "updated_at", db.Timestamp, form.Default).FieldNotAllowAdd()
 	formList.AddField(lg("createdAt"), "created_at", db.Timestamp, form.Default).FieldNotAllowAdd()
@@ -859,6 +950,159 @@ func GetMenuTable() (MenuTable Table) {
 	formList.SetTable("goadmin_menu").
 		SetTitle(lg("Menus Manage")).
 		SetDescription(lg("Menus Manage"))
+
+	return
+}
+
+func (s *SystemTable) GetSiteTable(ctx *context.Context) (siteTable Table) {
+	siteTable = NewDefaultTable(DefaultConfigWithDriver(config.GetDatabases().GetDefault().Driver).
+		SetGetDataFun(func(params parameter.Parameters) (i []map[string]interface{}, i2 int) {
+			return []map[string]interface{}{models.Site().SetConn(s.conn).AllToMapInterface()}, 1
+		}))
+
+	trueStr := lgWithConfigScore("true")
+	falseStr := lgWithConfigScore("false")
+
+	formList := siteTable.GetForm().AddXssJsFilter()
+	formList.AddField("ID", "id", db.Varchar, form.Default).FieldDefault("1").FieldHide()
+	formList.AddField(lgWithConfigScore("site off"), "site_off", db.Varchar, form.Switch).
+		FieldOptions(types.FieldOptions{
+			{Text: trueStr, Value: "true"},
+			{Text: falseStr, Value: "false"},
+		})
+	formList.AddField(lgWithConfigScore("debug"), "debug", db.Varchar, form.Switch).
+		FieldOptions(types.FieldOptions{
+			{Text: trueStr, Value: "true"},
+			{Text: falseStr, Value: "false"},
+		})
+	formList.AddField(lgWithConfigScore("env"), "env", db.Varchar, form.SelectSingle).
+		FieldOptions(types.FieldOptions{
+			{Text: lgWithConfigScore("test"), Value: config.EnvTest},
+			{Text: lgWithConfigScore("prod"), Value: config.EnvProd},
+			{Text: lgWithConfigScore("local"), Value: config.EnvLocal},
+		})
+
+	langOps := make(types.FieldOptions, len(language.Langs))
+	for k, t := range language.Langs {
+		langOps[k] = types.FieldOption{Text: lgWithConfigScore(t, "language"), Value: t}
+	}
+	formList.AddField(lgWithConfigScore("language"), "language", db.Varchar, form.SelectSingle).
+		FieldDisplay(func(value types.FieldModel) interface{} {
+			return language.FixedLanguageKey(value.Value)
+		}).
+		FieldOptions(langOps)
+	themes := template.Themes()
+	themesOps := make(types.FieldOptions, len(themes))
+	for k, t := range themes {
+		themesOps[k] = types.FieldOption{Text: t, Value: t}
+	}
+
+	formList.AddField(lgWithConfigScore("theme"), "theme", db.Varchar, form.SelectSingle).
+		FieldOptions(themesOps)
+	formList.AddField(lgWithConfigScore("title"), "title", db.Varchar, form.Text).FieldMust()
+	formList.AddField(lgWithConfigScore("color scheme"), "color_scheme", db.Varchar, form.SelectSingle).
+		FieldOptions(types.FieldOptions{
+			{Text: "skin-black", Value: "skin-black"},
+			{Text: "skin-black-light", Value: "skin-black-light"},
+			{Text: "skin-blue", Value: "skin-blue"},
+			{Text: "skin-blue-light", Value: "skin-blue-light"},
+			{Text: "skin-green", Value: "skin-green"},
+			{Text: "skin-green-light", Value: "skin-green-light"},
+			{Text: "skin-purple", Value: "skin-purple"},
+			{Text: "skin-purple-light", Value: "skin-purple-light"},
+			{Text: "skin-red", Value: "skin-red"},
+			{Text: "skin-red-light", Value: "skin-red-light"},
+			{Text: "skin-yellow", Value: "skin-yellow"},
+			{Text: "skin-yellow-light", Value: "skin-yellow-light"},
+		}).FieldHelpMsg(template.HTML(lgWithConfigScore("It will work when theme is adminlte")))
+	formList.AddField(lgWithConfigScore("login title"), "login_title", db.Varchar, form.Text).FieldMust()
+	formList.AddField(lgWithConfigScore("extra"), "extra", db.Varchar, form.TextArea)
+	//formList.AddField(lgWithConfigScore("databases"), "databases", db.Varchar, form.TextArea).
+	//	FieldDisplay(func(value types.FieldModel) interface{} {
+	//		var buf = new(bytes.Buffer)
+	//		_ = json.Indent(buf, []byte(value.Value), "", "    ")
+	//		return template.HTML(buf.String())
+	//	}).FieldNotAllowEdit()
+
+	formList.AddField(lgWithConfigScore("logo"), "logo", db.Varchar, form.Code).FieldMust()
+	formList.AddField(lgWithConfigScore("mini logo"), "mini_logo", db.Varchar, form.Code).FieldMust()
+	formList.AddField(lgWithConfigScore("session life time"), "session_life_time", db.Varchar, form.Number)
+	formList.AddField(lgWithConfigScore("custom head html"), "custom_head_html", db.Varchar, form.Code)
+	formList.AddField(lgWithConfigScore("custom foot Html"), "custom_foot_Html", db.Varchar, form.Code)
+	formList.AddField(lgWithConfigScore("footer info"), "footer_info", db.Varchar, form.Code)
+	formList.AddField(lgWithConfigScore("login logo"), "login_logo", db.Varchar, form.Code)
+	formList.AddField(lgWithConfigScore("no limit login ip"), "no_limit_login_ip", db.Varchar, form.Switch).
+		FieldOptions(types.FieldOptions{
+			{Text: trueStr, Value: "true"},
+			{Text: falseStr, Value: "false"},
+		})
+	formList.AddField(lgWithConfigScore("animation"), "animation", db.Varchar, form.Text).
+		FieldHelpMsg(`see more: <a href="https://daneden.github.io/animate.css/">https://daneden.github.io/animate.css/</a>`)
+	formList.AddField(lgWithConfigScore("file upload engine"), "file_upload_engine", db.Varchar, form.Text)
+
+	formList.AddField(lgWithConfigScore("cdn url"), "asset_url", db.Varchar, form.Text).
+		FieldHelpMsg(template.HTML(lgWithConfigScore("Do not modify when you have not set up all assets")))
+
+	formList.AddField(lgWithConfigScore("info log path"), "info_log_path", db.Varchar, form.Text)
+	formList.AddField(lgWithConfigScore("error log path"), "error_log_path", db.Varchar, form.Text)
+	formList.AddField(lgWithConfigScore("access log path"), "access_log_path", db.Varchar, form.Text)
+	formList.AddField(lgWithConfigScore("info log off"), "info_log_off", db.Varchar, form.Switch).
+		FieldOptions(types.FieldOptions{
+			{Text: trueStr, Value: "true"},
+			{Text: falseStr, Value: "false"},
+		})
+	formList.AddField(lgWithConfigScore("error log off"), "error_log_off", db.Varchar, form.Switch).
+		FieldOptions(types.FieldOptions{
+			{Text: trueStr, Value: "true"},
+			{Text: falseStr, Value: "false"},
+		})
+	formList.AddField(lgWithConfigScore("access log off"), "access_log_off", db.Varchar, form.Switch).
+		FieldOptions(types.FieldOptions{
+			{Text: trueStr, Value: "true"},
+			{Text: falseStr, Value: "false"},
+		})
+
+	formList.HideBackButton().HideContinueEditCheckBox().HideContinueNewCheckBox()
+	formList.SetTabGroups(types.NewTabGroups("id", "site_off", "debug", "env", "language", "theme",
+		"asset_url", "title", "login_title", "color_scheme", "session_life_time", "no_limit_login_ip", "animation",
+		"file_upload_engine", "extra").
+		AddGroup("access_log_off", "info_log_off", "error_log_off", "info_log_path", "error_log_path", "access_log_path").
+		AddGroup("logo", "mini_logo", "custom_head_html", "custom_foot_Html", "footer_info", "login_logo")).
+		SetTabHeaders(lgWithConfigScore("general"), lgWithConfigScore("log"), lgWithConfigScore("custom"))
+
+	formList.SetTable("goadmin_site").
+		SetTitle(lgWithConfigScore("site setting")).
+		SetDescription(lgWithConfigScore("site setting"))
+
+	formList.SetUpdateFn(func(values form2.Values) error {
+
+		ses := values.Get("session_life_time")
+		sesInt, _ := strconv.Atoi(ses)
+		if sesInt < 900 {
+			return errors.New("wrong session life time, must bigger than 900 seconds")
+		}
+		if err := checkJSON(values, "animation"); err != nil {
+			return err
+		}
+		if err := checkJSON(values, "file_upload_engine"); err != nil {
+			return err
+		}
+
+		var err error
+		if s.c.UpdateProcessFn != nil {
+			values, err = s.c.UpdateProcessFn(values)
+			if err != nil {
+				return err
+			}
+		}
+
+		// TODO: add transaction
+		err = models.Site().SetConn(s.conn).Update(values.RemoveSysRemark())
+		if err != nil {
+			return err
+		}
+		return s.c.Update(values.ToMap())
+	})
 
 	return
 }
@@ -876,23 +1120,39 @@ func encodePassword(pwd []byte) string {
 }
 
 func label() types.LabelAttribute {
-	return template.Get(config.Get().Theme).Label().SetType("success")
+	return template.Get(config.GetTheme()).Label().SetType("success")
 }
 
 func lg(v string) string {
 	return language.Get(v)
 }
 
-func table(table string) *db.SQL {
-	return connection().Table(table)
+func lgWithConfigScore(v string, score ...string) string {
+	scores := append([]string{"config"}, score...)
+	return language.GetWithScope(v, scores...)
 }
 
-func connection() *db.SQL {
-	return db.WithDriver(db.GetConnection(services))
+func link(url, content string) tmpl.HTML {
+	return html.AEl().
+		SetAttr("href", url).
+		SetContent(template.HTML(lg(content))).
+		Get()
 }
 
-func conn() db.Connection {
-	return db.GetConnection(services)
+func checkJSON(values form2.Values, key string) error {
+	v := values.Get(key)
+	if v != "" && !utils.IsJSON(v) {
+		return errors.New("wrong " + key)
+	}
+	return nil
+}
+
+func (s *SystemTable) table(table string) *db.SQL {
+	return s.connection().Table(table)
+}
+
+func (s *SystemTable) connection() *db.SQL {
+	return db.WithDriver(s.conn)
 }
 
 func interfaces(arr []string) []interface{} {
@@ -903,8 +1163,4 @@ func interfaces(arr []string) []interface{} {
 	}
 
 	return iarr
-}
-
-func notNoAffectRow(s error) bool {
-	return s.Error() != "no affect row"
 }

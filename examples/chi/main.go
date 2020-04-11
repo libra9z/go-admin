@@ -1,17 +1,14 @@
 package main
 
 import (
-	ada "github.com/GoAdminGroup/go-admin/adapter/chi"
 	"github.com/GoAdminGroup/go-admin/engine"
 	"github.com/GoAdminGroup/go-admin/examples/datamodel"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	_ "github.com/GoAdminGroup/go-admin/modules/db/drivers/mysql"
 	"github.com/GoAdminGroup/go-admin/modules/language"
-	"github.com/GoAdminGroup/go-admin/plugins/admin"
 	"github.com/GoAdminGroup/go-admin/plugins/example"
 	"github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/chartjs"
-	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/GoAdminGroup/themes/adminlte"
 	"github.com/go-chi/chi"
 	"log"
@@ -51,16 +48,7 @@ func main() {
 		ColorScheme: adminlte.ColorschemeSkinBlack,
 	}
 
-	adminPlugin := admin.NewAdmin(datamodel.Generators).AddDisplayFilterXssJsFilter()
-
 	template.AddComp(chartjs.NewChart())
-
-	// add generator, first parameter is the url prefix of table when visit.
-	// example:
-	//
-	// "user" => http://localhost:3333/admin/info/user
-	//
-	adminPlugin.AddGenerator("user", datamodel.GetUserTable)
 
 	// customize a plugin
 
@@ -71,7 +59,7 @@ func main() {
 	// examplePlugin := plugins.LoadFromPlugin("../datamodel/example.so")
 
 	// customize the login page
-	// example: https://github.com/GoAdminGroup/go-admin/blob/master/demo/main.go#L30
+	// example: https://github.com/GoAdminGroup/demo.go-admin.cn/blob/master/main.go#L39
 	//
 	// template.AddComp("login", datamodel.LoginPage)
 
@@ -79,7 +67,17 @@ func main() {
 	//
 	// eng.AddConfigFromJSON("../datamodel/config.json")
 
-	if err := eng.AddConfig(cfg).AddPlugins(adminPlugin, examplePlugin).Use(r); err != nil {
+	if err := eng.AddConfig(cfg).
+		AddGenerators(datamodel.Generators).
+		AddDisplayFilterXssJsFilter().
+		// add generator, first parameter is the url prefix of table when visit.
+		// example:
+		//
+		// "user" => http://localhost:9033/admin/info/user
+		//
+		AddGenerator("user", datamodel.GetUserTable).
+		AddPlugins(examplePlugin).
+		Use(r); err != nil {
 		panic(err)
 	}
 
@@ -89,11 +87,7 @@ func main() {
 
 	// you can custom your pages like:
 
-	r.Get("/admin", func(writer http.ResponseWriter, request *http.Request) {
-		eng.Content(ada.Context{Request: request, Response: writer}, func(ctx interface{}) (types.Panel, error) {
-			return datamodel.GetContent()
-		})
-	})
+	eng.HTML("GET", "/admin", datamodel.GetContent)
 
 	go func() {
 		_ = http.ListenAndServe(":3333", r)

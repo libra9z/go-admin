@@ -5,10 +5,17 @@
 package plugins
 
 import (
+	"bytes"
 	"errors"
 	"github.com/GoAdminGroup/go-admin/context"
+	"github.com/GoAdminGroup/go-admin/modules/config"
+	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
+	"github.com/GoAdminGroup/go-admin/modules/menu"
 	"github.com/GoAdminGroup/go-admin/modules/service"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
+	"github.com/GoAdminGroup/go-admin/template"
+	"github.com/GoAdminGroup/go-admin/template/types"
 	"plugin"
 )
 
@@ -19,22 +26,13 @@ import (
 // something like init the database and set the config and register
 // the routes. The Plugin must implement the three methods.
 type Plugin interface {
-	GetRequest() []context.Path
-	GetHandler(url, method string) context.Handlers
+	GetHandler() context.HandlerMap
 	InitPlugin(services service.List)
+	Name() string
 }
 
 // GetHandler is a help method for Plugin GetHandler.
-func GetHandler(url, method string, app *context.App) context.Handlers {
-
-	handler := app.Find(url, method)
-
-	if len(handler) == 0 {
-		panic("handler not found")
-	}
-
-	return handler
-}
+func GetHandler(app *context.App) context.HandlerMap { return app.Handlers }
 
 func LoadFromPlugin(mod string) Plugin {
 
@@ -58,4 +56,20 @@ func LoadFromPlugin(mod string) Plugin {
 	}
 
 	return p
+}
+
+func Execute(ctx *context.Context, conn db.Connection, navButtons types.Buttons, user models.UserModel,
+	panel types.Panel, animation ...bool) *bytes.Buffer {
+	tmpl, tmplName := template.Get(config.GetTheme()).GetTemplate(ctx.IsPjax())
+
+	return template.Execute(template.ExecuteParam{
+		User:      user,
+		TmplName:  tmplName,
+		Tmpl:      tmpl,
+		Panel:     panel,
+		Config:    config.Get(),
+		Menu:      menu.GetGlobalMenu(user, conn).SetActiveClass(config.URLRemovePrefix(ctx.Path())),
+		Animation: len(animation) > 0 && animation[0] || len(animation) == 0,
+		Buttons:   navButtons.CheckPermission(user),
+	})
 }

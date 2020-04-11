@@ -5,13 +5,30 @@
 package engine
 
 import (
+	"bytes"
+	"fmt"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/response"
+	template2 "html/template"
+	"net/http"
+	"strings"
+
 	"github.com/GoAdminGroup/go-admin/adapter"
+	"github.com/GoAdminGroup/go-admin/context"
+	"github.com/GoAdminGroup/go-admin/modules/auth"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/db"
+	"github.com/GoAdminGroup/go-admin/modules/errors"
+	"github.com/GoAdminGroup/go-admin/modules/logger"
+	"github.com/GoAdminGroup/go-admin/modules/menu"
 	"github.com/GoAdminGroup/go-admin/modules/service"
 	"github.com/GoAdminGroup/go-admin/plugins"
+	"github.com/GoAdminGroup/go-admin/plugins/admin"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
+	"github.com/GoAdminGroup/go-admin/template"
+	"github.com/GoAdminGroup/go-admin/template/icon"
 	"github.com/GoAdminGroup/go-admin/template/types"
+	"github.com/GoAdminGroup/go-admin/template/types/action"
 )
 
 // Engine is the core component of goAdmin. It has two attributes.
@@ -23,8 +40,9 @@ type Engine struct {
 	PluginList []plugins.Plugin
 	Adapter    adapter.WebFrameWork
 	Services   service.List
+	NavButtons types.Buttons
 
-	config config.Config
+	config *config.Config
 }
 
 // Default return the default engine instance.
@@ -41,19 +59,57 @@ func (eng *Engine) Use(router interface{}) error {
 		panic("adapter is nil, import the default adapter or use AddAdapter method add the adapter")
 	}
 
+	if len(eng.PluginList) == 0 {
+		eng.PluginList = append(eng.PluginList, admin.NewAdmin())
+	}
+
+	eng.Services.Add("config", config.SrvWithConfig(eng.config))
+	errors.Init()
+
+	if !eng.config.HideConfigCenterEntrance {
+		btn := types.GetNavButton("", icon.Gear, action.Jump(eng.config.Url("/info/site/edit")))
+		eng.AdminPlugin().AddNavButton(btn)
+		eng.NavButtons = append(eng.NavButtons, btn)
+		navButtons = append(navButtons, btn)
+	}
+
+	// Initialize plugins
+	for i := range eng.PluginList {
+		eng.PluginList[i].InitPlugin(eng.Services)
+	}
+
 	return eng.Adapter.Use(router, eng.PluginList)
 }
 
 // AddPlugins add the plugins and initialize them.
 func (eng *Engine) AddPlugins(plugs ...plugins.Plugin) *Engine {
 
-	for _, plug := range plugs {
-		plug.InitPlugin(eng.Services)
+	if len(plugs) == 0 {
+		panic("wrong plugins")
 	}
 
 	eng.PluginList = append(eng.PluginList, plugs...)
+
 	return eng
 }
+
+func (eng *Engine) FindPluginByName(name string) (plugins.Plugin, bool) {
+	for _, plug := range eng.PluginList {
+		if plug.Name() == name {
+			return plug, true
+		}
+	}
+	return nil, false
+}
+
+func (eng *Engine) AddAuthService(processor auth.Processor) *Engine {
+	eng.Services.Add("auth", auth.NewService(processor))
+	return eng
+}
+
+// ============================
+// Config APIs
+// ============================
 
 // AddConfig set the global config.
 func (eng *Engine) AddConfig(cfg config.Config) *Engine {
@@ -63,6 +119,10 @@ func (eng *Engine) AddConfig(cfg config.Config) *Engine {
 // setConfig set the config of engine.
 func (eng *Engine) setConfig(cfg config.Config) *Engine {
 	eng.config = config.Set(cfg)
+	if !template.CheckRequirements() {
+		panic(fmt.Sprintf("Wrong GoAdmin version, theme %s required GoAdmin version are %s",
+			cfg.Theme, strings.Join(template.Default().GetRequirements(), ",")))
+	}
 	return eng
 }
 
@@ -105,30 +165,14 @@ func (eng *Engine) AddAdapter(ada adapter.WebFrameWork) *Engine {
 // defaultAdapter is the default adapter of engine.
 var defaultAdapter adapter.WebFrameWork
 
+var navButtons = make([]types.Button, 0)
+
 // Register set default adapter of engine.
 func Register(ada adapter.WebFrameWork) {
 	if ada == nil {
 		panic("adapter is nil")
 	}
 	defaultAdapter = ada
-}
-
-// Content call the Content method of engine adapter.
-// If adapter is nil, it will panic.
-func (eng *Engine) Content(ctx interface{}, panel types.GetPanelFn) {
-	if eng.Adapter == nil {
-		panic("adapter is nil")
-	}
-	eng.Adapter.Content(ctx, panel)
-}
-
-// Content call the Content method of defaultAdapter.
-// If defaultAdapter is nil, it will panic.
-func Content(ctx interface{}, panel types.GetPanelFn) {
-	if defaultAdapter == nil {
-		panic("adapter is nil")
-	}
-	defaultAdapter.Content(ctx, panel)
 }
 
 // User call the User method of defaultAdapter.
@@ -140,6 +184,10 @@ func User(ci interface{}) (models.UserModel, bool) {
 func (eng *Engine) User(ci interface{}) (models.UserModel, bool) {
 	return eng.Adapter.User(ci)
 }
+
+// ============================
+// DB Connection APIs
+// ============================
 
 // db return the db connection of given driver.
 func (eng *Engine) DB(driver string) db.Connection {
@@ -206,5 +254,244 @@ func (eng *Engine) Clone(e *Engine) *Engine {
 
 func (eng *Engine) ClonedBySetter(setter Setter) *Engine {
 	setter(eng)
+	return eng
+}
+
+func (eng *Engine) wrapWithAuthMiddleware(handler context.Handler) context.Handlers {
+	return []context.Handler{response.OffLineHandler, auth.Middleware(db.GetConnection(eng.Services)), handler}
+}
+
+// ============================
+// HTML Content Render APIs
+// ============================
+
+func (eng *Engine) AddNavButtons(title template2.HTML, icon string, action types.Action) *Engine {
+	btn := types.GetNavButton(title, icon, action)
+	eng.AdminPlugin().AddNavButton(btn)
+	eng.NavButtons = append(eng.NavButtons, btn)
+	navButtons = append(navButtons, btn)
+	return eng
+}
+
+// Content call the Content method of engine adapter.
+// If adapter is nil, it will panic.
+func (eng *Engine) Content(ctx interface{}, panel types.GetPanelFn) {
+	if eng.Adapter == nil {
+		panic("adapter is nil")
+	}
+	eng.Adapter.Content(ctx, panel, eng.NavButtons...)
+}
+
+// Content call the Content method of defaultAdapter.
+// If defaultAdapter is nil, it will panic.
+func Content(ctx interface{}, panel types.GetPanelFn) {
+	if defaultAdapter == nil {
+		panic("adapter is nil")
+	}
+	defaultAdapter.Content(ctx, panel, navButtons...)
+}
+
+func (eng *Engine) Data(method, url string, handler context.Handler) {
+	eng.Adapter.AddHandler(method, url, eng.wrapWithAuthMiddleware(handler))
+}
+
+func (eng *Engine) HTML(method, url string, fn types.GetPanelInfoFn) {
+
+	eng.Adapter.AddHandler(method, url, eng.wrapWithAuthMiddleware(func(ctx *context.Context) {
+		panel, err := fn(ctx)
+		if err != nil {
+			panel = template.WarningPanel(err.Error())
+		}
+
+		tmpl, tmplName := template.Default().GetTemplate(ctx.IsPjax())
+
+		user := auth.Auth(ctx)
+
+		buf := new(bytes.Buffer)
+		hasError := tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(types.NewPageParam{
+			User:    user,
+			Menu:    menu.GetGlobalMenu(user, eng.Adapter.GetConnection()).SetActiveClass(config.URLRemovePrefix(ctx.Path())),
+			Panel:   panel.GetContent(eng.config.IsProductionEnvironment()),
+			Assets:  template.GetComponentAssetListsHTML(),
+			Buttons: eng.NavButtons.CheckPermission(user),
+		}))
+
+		if hasError != nil {
+			logger.Error(fmt.Sprintf("error: %s adapter content, ", eng.Adapter.Name()), hasError)
+		}
+
+		ctx.HTMLByte(http.StatusOK, buf.Bytes())
+	}))
+}
+
+func (eng *Engine) HTMLFile(method, url, path string, data map[string]interface{}) {
+	eng.Adapter.AddHandler(method, url, eng.wrapWithAuthMiddleware(func(ctx *context.Context) {
+
+		cbuf := new(bytes.Buffer)
+
+		t, err := template2.ParseFiles(path)
+		if err != nil {
+			eng.errorPanelHTML(ctx, cbuf, err)
+		} else {
+			if err := t.Execute(cbuf, data); err != nil {
+				eng.errorPanelHTML(ctx, cbuf, err)
+			}
+		}
+
+		tmpl, tmplName := template.Default().GetTemplate(ctx.IsPjax())
+
+		user := auth.Auth(ctx)
+
+		buf := new(bytes.Buffer)
+		hasError := tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(types.NewPageParam{
+			User: user,
+			Menu: menu.GetGlobalMenu(user, eng.Adapter.GetConnection()).SetActiveClass(eng.config.URLRemovePrefix(ctx.Path())),
+			Panel: types.Panel{
+				Content: template.HTML(cbuf.String()),
+			},
+			Assets:  template.GetComponentAssetListsHTML(),
+			Buttons: eng.NavButtons.CheckPermission(user),
+		}))
+
+		if hasError != nil {
+			logger.Error(fmt.Sprintf("error: %s adapter content, ", eng.Adapter.Name()), hasError)
+		}
+
+		ctx.HTMLByte(http.StatusOK, buf.Bytes())
+	}))
+}
+
+func (eng *Engine) HTMLFiles(method, url string, data map[string]interface{}, files ...string) {
+	eng.Adapter.AddHandler(method, url, eng.wrapWithAuthMiddleware(func(ctx *context.Context) {
+
+		cbuf := new(bytes.Buffer)
+
+		t, err := template2.ParseFiles(files...)
+		if err != nil {
+			eng.errorPanelHTML(ctx, cbuf, err)
+		} else {
+			if err := t.Execute(cbuf, data); err != nil {
+				eng.errorPanelHTML(ctx, cbuf, err)
+			}
+		}
+
+		tmpl, tmplName := template.Default().GetTemplate(ctx.IsPjax())
+
+		user := auth.Auth(ctx)
+
+		buf := new(bytes.Buffer)
+		hasError := tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(types.NewPageParam{
+			User: user,
+			Menu: menu.GetGlobalMenu(user, eng.Adapter.GetConnection()).SetActiveClass(eng.config.URLRemovePrefix(ctx.Path())),
+			Panel: types.Panel{
+				Content: template.HTML(cbuf.String()),
+			},
+			Assets:  template.GetComponentAssetListsHTML(),
+			Buttons: eng.NavButtons.CheckPermission(user),
+		}))
+
+		if hasError != nil {
+			logger.Error(fmt.Sprintf("error: %s adapter content, ", eng.Adapter.Name()), hasError)
+		}
+
+		ctx.HTMLByte(http.StatusOK, buf.Bytes())
+	}))
+}
+
+func (eng *Engine) errorPanelHTML(ctx *context.Context, buf *bytes.Buffer, err error) {
+
+	user := auth.Auth(ctx)
+
+	tmpl, tmplName := template.Default().GetTemplate(ctx.IsPjax())
+
+	hasError := tmpl.ExecuteTemplate(buf, tmplName, types.NewPage(types.NewPageParam{
+		User:    user,
+		Menu:    menu.GetGlobalMenu(user, eng.Adapter.GetConnection()).SetActiveClass(eng.config.URLRemovePrefix(ctx.Path())),
+		Panel:   template.WarningPanel(err.Error()).GetContent(eng.config.IsProductionEnvironment()),
+		Assets:  template.GetComponentAssetListsHTML(),
+		Buttons: eng.NavButtons.CheckPermission(user),
+	}))
+
+	if hasError != nil {
+		logger.Error(fmt.Sprintf("error: %s adapter content, ", eng.Adapter.Name()), hasError)
+	}
+}
+
+// ============================
+// Admin Plugin APIs
+// ============================
+
+func (eng *Engine) AddGenerators(list ...table.GeneratorList) *Engine {
+	eng.PluginList = append(eng.PluginList, admin.NewAdmin(list...))
+	return eng
+}
+
+func (eng *Engine) AdminPlugin() *admin.Admin {
+	plug, exist := eng.FindPluginByName("admin")
+	if exist {
+		return plug.(*admin.Admin)
+	}
+	adm := admin.NewAdmin()
+	eng.PluginList = append(eng.PluginList, adm)
+	return adm
+}
+
+// AddGenerator add table model generator.
+func (eng *Engine) AddGenerator(key string, g table.Generator) *Engine {
+	eng.AdminPlugin().AddGenerator(key, g)
+	return eng
+}
+
+// AddGlobalDisplayProcessFn call types.AddGlobalDisplayProcessFn
+func (eng *Engine) AddGlobalDisplayProcessFn(f types.DisplayProcessFn) *Engine {
+	types.AddGlobalDisplayProcessFn(f)
+	return eng
+}
+
+// AddDisplayFilterLimit call types.AddDisplayFilterLimit
+func (eng *Engine) AddDisplayFilterLimit(limit int) *Engine {
+	types.AddLimit(limit)
+	return eng
+}
+
+// AddDisplayFilterTrimSpace call types.AddDisplayFilterTrimSpace
+func (eng *Engine) AddDisplayFilterTrimSpace() *Engine {
+	types.AddTrimSpace()
+	return eng
+}
+
+// AddDisplayFilterSubstr call types.AddDisplayFilterSubstr
+func (eng *Engine) AddDisplayFilterSubstr(start int, end int) *Engine {
+	types.AddSubstr(start, end)
+	return eng
+}
+
+// AddDisplayFilterToTitle call types.AddDisplayFilterToTitle
+func (eng *Engine) AddDisplayFilterToTitle() *Engine {
+	types.AddToTitle()
+	return eng
+}
+
+// AddDisplayFilterToUpper call types.AddDisplayFilterToUpper
+func (eng *Engine) AddDisplayFilterToUpper() *Engine {
+	types.AddToUpper()
+	return eng
+}
+
+// AddDisplayFilterToLower call types.AddDisplayFilterToLower
+func (eng *Engine) AddDisplayFilterToLower() *Engine {
+	types.AddToUpper()
+	return eng
+}
+
+// AddDisplayFilterXssFilter call types.AddDisplayFilterXssFilter
+func (eng *Engine) AddDisplayFilterXssFilter() *Engine {
+	types.AddXssFilter()
+	return eng
+}
+
+// AddDisplayFilterXssJsFilter call types.AddDisplayFilterXssJsFilter
+func (eng *Engine) AddDisplayFilterXssJsFilter() *Engine {
+	types.AddXssJsFilter()
 	return eng
 }

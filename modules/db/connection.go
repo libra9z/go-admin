@@ -6,8 +6,10 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/service"
+	"strings"
 )
 
 const (
@@ -59,7 +61,7 @@ type Connection interface {
 
 	Close() []error
 
-	// GetDelimiter get the default delimiter.
+	// GetDelimiter get the default testDelimiter.
 	GetDelimiter() string
 
 	GetDB(key string) *sql.DB
@@ -89,8 +91,66 @@ func GetConnectionFromService(srv interface{}) Connection {
 }
 
 func GetConnection(srvs service.List) Connection {
-	if v, ok := srvs.Get(config.Get().Databases.GetDefault().Driver).(Connection); ok {
+	if v, ok := srvs.Get(config.GetDatabases().GetDefault().Driver).(Connection); ok {
 		return v
 	}
 	panic("wrong service")
+}
+
+func GetAggregationExpression(driver, field, headField, delimiter string) string {
+	switch driver {
+	case "postgresql":
+		return fmt.Sprintf("string_agg(%s::character varying, '%s') as %s", field, delimiter, headField)
+	case "mysql":
+		return fmt.Sprintf("group_concat(%s separator '%s') as %s", field, delimiter, headField)
+	case "sqlite":
+		return fmt.Sprintf("group_concat(%s, '%s') as %s", field, delimiter, headField)
+	case "mssql":
+		return fmt.Sprintf("string_agg(%s, '%s') as [%s]", field, delimiter, headField)
+	default:
+		panic("wrong driver")
+	}
+}
+
+const (
+	INSERT = 0
+	DELETE = 1
+	UPDATE = 2
+	QUERY  = 3
+)
+
+var ignoreErrors = [...][]string{
+	// insert
+	{
+		"LastInsertId is not supported",
+		"There is no generated identity value",
+	},
+	// delete
+	{
+		"no affect",
+	},
+	// update
+	{
+		"LastInsertId is not supported",
+		"There is no generated identity value",
+		"no affect",
+	},
+	// query
+	{
+		"LastInsertId is not supported",
+		"There is no generated identity value",
+		"no affect",
+	},
+}
+
+func CheckError(err error, t int) bool {
+	if err == nil {
+		return false
+	}
+	for _, msg := range ignoreErrors[t] {
+		if strings.Contains(err.Error(), msg) {
+			return false
+		}
+	}
+	return true
 }

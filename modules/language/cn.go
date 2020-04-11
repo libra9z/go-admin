@@ -4,7 +4,9 @@
 
 package language
 
-var cn = map[string]string{
+import "strings"
+
+var cn = LangSet{
 	"managers":  "管理员管理",
 	"name":      "用户名",
 	"nickname":  "昵称",
@@ -33,6 +35,7 @@ var cn = map[string]string{
 	"home":            "首页",
 	"all":             "全部",
 	"more":            "更多",
+	"browse":          "打开",
 
 	"permission manage": "权限管理",
 	"menus manage":      "菜单管理",
@@ -47,6 +50,7 @@ var cn = map[string]string{
 
 	"permission denied": "没有权限",
 	"error":             "错误",
+	"success":           "成功",
 	"current page":      "当前页",
 
 	"are you sure to delete": "你确定要删除吗",
@@ -56,6 +60,7 @@ var cn = map[string]string{
 	"refresh succeeded":      "刷新成功",
 	"edit fail":              "编辑失败",
 	"create fail":            "新增失败",
+	"delete fail":            "删除失败",
 	"confirm password":       "确认密码",
 	"all method if empty":    "为空默认为所有方法",
 
@@ -63,6 +68,7 @@ var cn = map[string]string{
 
 	"avatar":     "头像",
 	"password":   "密码",
+	"username":   "用户名",
 	"slug":       "标志",
 	"permission": "权限",
 	"userid":     "用户ID",
@@ -70,15 +76,20 @@ var cn = map[string]string{
 	"parent":     "父级",
 	"icon":       "图标",
 	"uri":        "路径",
+	"close":      "关闭",
 
 	"login":      "登录",
 	"login fail": "登录失败",
 
 	"admin":     "管理",
+	"user":      "用户",
 	"users":     "用户",
 	"roles":     "角色",
 	"menu":      "菜单",
 	"dashboard": "仪表盘",
+
+	"continue editing":  "继续编辑",
+	"continue creating": "继续新增",
 
 	"username and password can not be empty":        "用户名密码不能为空",
 	"operation not allow":                           "不允许的操作",
@@ -87,9 +98,68 @@ var cn = map[string]string{
 	"slug exists":                                   "标志已经存在了",
 	"no corresponding options?":                     "没找到对应选项？",
 	"create here.":                                  "在这里新建一个。",
-	"used for login":                                "用于登录",
-	"used to display":                               "用来展示",
+	"use for login":                                 "用于登录",
+	"use to display":                                "用来展示",
 	"a path a line":                                 "一行一个路径，换行输入新路径",
 	"slug or http_path or name should not be empty": "标志或路径或权限名不能为空",
 	"no roles":                                      "无角色",
+	"no permission":                                 "没有权限",
+	"fixed the sidebar":                             "固定侧边栏",
+	"enter fullscreen":                              "进入全屏",
+	"exit fullscreen":                               "退出全屏",
+	"wrong captcha":                                 "错误的验证码",
+	"modify success":                                "修改成功",
+
+	"config.domain":          "网站域名",
+	"config.language":        "网站语言",
+	"config.url prefix":      "URL前缀",
+	"config.theme":           "主题",
+	"config.title":           "标题",
+	"config.index url":       "首页URL",
+	"config.login url":       "登录URL",
+	"config.env":             "开发环境",
+	"config.color scheme":    "颜色主题",
+	"config.cdn url":         "cdn资源URL",
+	"config.login title":     "登录标题",
+	"config.auth user table": "登录用户表",
+	"config.extra":           "额外配置",
+	"config.store":           "文件存储设置",
+	"config.databases":       "数据库设置",
+	"config.info log path":   "信息日志存储路径",
+	"config.error log path":  "错误日志存储路径",
+	"config.access log path": "访问日志存储路径",
+	"config.info log off":    "关闭信息日志",
+	"config.error log off":   "关闭错误日志",
+	"config.access log off":  "关闭访问日志",
+	"config.general":         "通用",
+	"config.log":             "日志",
+	"config.site setting":    "网站设置",
+	"config.custom":          "定制",
+	"config.debug":           "Debug模式",
+	"config.site off":        "关闭网站",
+	"config.true":            "是",
+	"config.false":           "否",
+
+	"config.test":  "测试环境",
+	"config.prod":  "生产环境",
+	"config.local": "本地环境",
+
+	"config.logo":               "Logo",
+	"config.mini logo":          "Mini Logo",
+	"config.session life time":  "Session时长",
+	"config.custom head html":   "自定义Head HTML",
+	"config.custom foot html":   "自定义Foot HTML",
+	"config.footer info":        "自定义底部信息",
+	"config.login logo":         "登录Logo",
+	"config.no limit login ip":  "取消限制多IP登录",
+	"config.animation":          "动画",
+	"config.file upload engine": "文件上传引擎",
+
+	"config.do not modify when you have not set up all assets": "不要修改，当你还没有设置好所有资源文件的时候",
+	"config.it will work when theme is adminlte":               "当主题为adminlte时生效",
+
+	"config.language." + CN:                  "中文",
+	"config.language." + EN:                  "英文",
+	"config.language." + JP:                  "日文",
+	"config.language." + strings.ToLower(TC): "繁体中文",
 }

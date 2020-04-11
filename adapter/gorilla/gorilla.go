@@ -17,6 +17,7 @@ import (
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/gorilla/mux"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -40,8 +41,8 @@ func (g *Gorilla) Use(router interface{}, plugs []plugins.Plugin) error {
 	return g.GetUse(router, plugs, g)
 }
 
-func (g *Gorilla) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	g.GetContent(ctx, getPanelFn, g)
+func (g *Gorilla) Content(ctx interface{}, getPanelFn types.GetPanelFn, btns ...types.Button) {
+	g.GetContent(ctx, getPanelFn, g, btns)
 }
 
 type HandlerFunc func(ctx Context) (types.Panel, error)
@@ -70,7 +71,7 @@ func (g *Gorilla) SetApp(app interface{}) error {
 	return nil
 }
 
-func (g *Gorilla) AddHandler(method, path string, plug plugins.Plugin) {
+func (g *Gorilla) AddHandler(method, path string, handlers context.Handlers) {
 
 	reg1 := regexp.MustCompile(":(.*?)/")
 	reg2 := regexp.MustCompile(":(.*?)$")
@@ -92,7 +93,7 @@ func (g *Gorilla) AddHandler(method, path string, plug plugins.Plugin) {
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(r.URL.Path, strings.ToLower(r.Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			w.Header().Add(key, head[0])
 		}
@@ -138,7 +139,7 @@ func (g *Gorilla) SetContext(contextInterface interface{}) adapter.WebFrameWork 
 }
 
 func (g *Gorilla) Redirect() {
-	http.Redirect(g.ctx.Response, g.ctx.Request, config.Get().Url("/login"), http.StatusFound)
+	http.Redirect(g.ctx.Response, g.ctx.Request, config.Url("/login"), http.StatusFound)
 }
 
 func (g *Gorilla) SetContentType() {
@@ -165,6 +166,11 @@ func (g *Gorilla) Method() string {
 	return g.ctx.Request.Method
 }
 
-func (g *Gorilla) PjaxHeader() string {
-	return g.ctx.Request.Header.Get(constant.PjaxHeader)
+func (g *Gorilla) FormParam() url.Values {
+	_ = g.ctx.Request.ParseMultipartForm(32 << 20)
+	return g.ctx.Request.PostForm
+}
+
+func (g *Gorilla) IsPjax() bool {
+	return g.ctx.Request.Header.Get(constant.PjaxHeader) == "true"
 }

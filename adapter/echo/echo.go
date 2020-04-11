@@ -15,8 +15,9 @@ import (
 	"github.com/GoAdminGroup/go-admin/plugins/admin/models"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/template/types"
-	"github.com/labstack/echo"
+	"github.com/labstack/echo/v4"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -39,8 +40,8 @@ func (e *Echo) Use(router interface{}, plugs []plugins.Plugin) error {
 	return e.GetUse(router, plugs, e)
 }
 
-func (e *Echo) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	e.GetContent(ctx, getPanelFn, e)
+func (e *Echo) Content(ctx interface{}, getPanelFn types.GetPanelFn, btns ...types.Button) {
+	e.GetContent(ctx, getPanelFn, e, btns)
 }
 
 type HandlerFunc func(ctx echo.Context) (types.Panel, error)
@@ -66,7 +67,7 @@ func (e *Echo) SetApp(app interface{}) error {
 	return nil
 }
 
-func (e *Echo) AddHandler(method, path string, plug plugins.Plugin) {
+func (e *Echo) AddHandler(method, path string, handlers context.Handlers) {
 	e.app.Add(strings.ToUpper(method), path, func(c echo.Context) error {
 		ctx := context.NewContext(c.Request())
 
@@ -78,7 +79,7 @@ func (e *Echo) AddHandler(method, path string, plug plugins.Plugin) {
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(c.Request().URL.Path, strings.ToLower(c.Request().Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			c.Response().Header().Set(key, head[0])
 		}
@@ -107,7 +108,7 @@ func (e *Echo) SetContext(contextInterface interface{}) adapter.WebFrameWork {
 }
 
 func (e *Echo) Redirect() {
-	_ = e.ctx.Redirect(http.StatusFound, config.Get().Url("/login"))
+	_ = e.ctx.Redirect(http.StatusFound, config.Url("/login"))
 }
 
 func (e *Echo) SetContentType() {
@@ -135,6 +136,11 @@ func (e *Echo) Method() string {
 	return e.ctx.Request().Method
 }
 
-func (e *Echo) PjaxHeader() string {
-	return e.ctx.Request().Header.Get(constant.PjaxHeader)
+func (e *Echo) FormParam() url.Values {
+	_ = e.ctx.Request().ParseMultipartForm(32 << 20)
+	return e.ctx.Request().PostForm
+}
+
+func (e *Echo) IsPjax() bool {
+	return e.ctx.Request().Header.Get(constant.PjaxHeader) == "true"
 }

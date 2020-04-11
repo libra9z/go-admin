@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go/format"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -40,8 +41,10 @@ func generating(cfgFile string) {
 	cliInfo()
 
 	var (
-		driverName, host, port, dbFile, user, password, connection, packageName, outputPath, database string
-		chooseTables                                                                                  = make([]string, 0)
+		driverName, host, port, dbFile, user, password,
+		connection, packageName, outputPath, database, schema string
+
+		chooseTables = make([]string, 0)
 	)
 
 	if cfgFile != "" {
@@ -135,6 +138,10 @@ func generating(cfgFile string) {
 			password = promptPassword()
 		}
 
+		if schema == "" && driverName == "postgresql" {
+			schema = promptWithDefault("sql schema", "public")
+		}
+
 		if database == "" {
 			database = prompt("sql database name")
 		}
@@ -183,9 +190,14 @@ func generating(cfgFile string) {
 
 	// step 2. show tables
 	if len(chooseTables) == 0 {
-		tableModels, _ := db.WithDriver(conn).ShowTables()
+		tables, err := db.WithDriver(conn).ShowTables()
 
-		tables := getTablesFromSQLResult(tableModels, driverName, database)
+		if err != nil {
+			panic(err)
+		}
+
+		tables = filterTables(tables)
+
 		if len(tables) == 0 {
 			exitWithError(`no tables, you should build a table of your own business first.
 
@@ -238,7 +250,7 @@ see: http://www.go-admin.cn/en/docs/#/plugins/admin`)
 	for i := 0; i < len(chooseTables); i++ {
 		_ = bar.Add(1)
 		time.Sleep(10 * time.Millisecond)
-		generateFile(chooseTables[i], conn, fieldField, typeField, packageName, connection, driverName, outputPath)
+		generateFile(chooseTables[i], schema, conn, fieldField, typeField, packageName, connection, driverName, outputPath)
 	}
 	generateTables(outputPath, chooseTables, packageName)
 
@@ -279,34 +291,15 @@ func clear(osName string) {
 	}
 }
 
-func getTablesFromSQLResult(models []map[string]interface{}, driver string, dbName string) []string {
+func filterTables(models []string) []string {
 	tables := make([]string, 0)
-	if len(models) == 0 {
-		return tables
-	}
-
-	key := "Tables_in_" + dbName
-	if driver == "postgresql" || driver == "sqlite" {
-		key = "tablename"
-	} else if driver == "mssql" {
-		key = "TABLE_NAME"
-	} else {
-		if _, ok := models[0][key].(string); !ok {
-			key = "Tables_in_" + strings.ToLower(dbName)
-		}
-	}
 
 	for i := 0; i < len(models); i++ {
-		// skip sqlite system tables
-		if driver == "sqlite" && models[i][key].(string) == "sqlite_sequence" {
-			continue
-		}
-
 		// skip goadmin system tables
-		if isSystemTable(models[i][key].(string)) {
+		if isSystemTable(models[i]) {
 			continue
 		}
-		tables = append(tables, models[i][key].(string))
+		tables = append(tables, models[i])
 	}
 
 	return tables
@@ -388,11 +381,16 @@ func selects(tables []string) []string {
 	return chooseTables
 }
 
-func generateFile(table string, conn db.Connection, fieldField, typeField, packageName, connection, driver, outputPath string) {
-
-	columnsModel, _ := db.WithDriver(conn).Table(table).ShowColumns()
+func generateFile(table, schema string, conn db.Connection, fieldField, typeField, packageName, connection, driver, outputPath string) {
 
 	tableCamel := camelcase(table)
+
+	dbTable := table
+	if schema != "" {
+		dbTable = schema + "." + table
+	}
+
+	columnsModel, _ := db.WithDriver(conn).Table(dbTable).ShowColumns()
 
 	var newTable = `table.NewDefaultTable(table.DefaultConfigWithDriver("` + driver + `"))`
 	if connection != "default" {
@@ -402,12 +400,13 @@ func generateFile(table string, conn db.Connection, fieldField, typeField, packa
 	content := `package ` + packageName + `
 
 import (
+	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/db"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
 	"github.com/GoAdminGroup/go-admin/template/types/form"
 )
 
-func Get` + strings.Title(tableCamel) + `Table() table.Table {
+func Get` + strings.Title(tableCamel) + `Table(ctx *context.Context) table.Table {
 
     ` + tableCamel + `Table := ` + newTable + `
 
@@ -430,7 +429,7 @@ func Get` + strings.Title(tableCamel) + `Table() table.Table {
 	}
 
 	content += `
-	info.SetTable("` + table + `").SetTitle("` + strings.Title(table) + `").SetDescription("` + strings.Title(table) + `")
+	info.SetTable("` + dbTable + `").SetTitle("` + strings.Title(table) + `").SetDescription("` + strings.Title(table) + `")
 
 	formList := ` + tableCamel + `Table.GetForm()
 	
@@ -453,19 +452,25 @@ func Get` + strings.Title(tableCamel) + `Table() table.Table {
 	}
 
 	content += `
-	formList.SetTable("` + table + `").SetTitle("` + strings.Title(table) + `").SetDescription("` + strings.Title(table) + `")
+	formList.SetTable("` + dbTable + `").SetTitle("` + strings.Title(table) + `").SetDescription("` + strings.Title(table) + `")
 
 	return ` + tableCamel + `Table
 }`
 
-	err := ioutil.WriteFile(outputPath+"/"+table+".go", []byte(content), 0644)
+	c, err := format.Source([]byte(content))
 	checkError(err)
+
+	checkError(ioutil.WriteFile(outputPath+"/"+table+".go", c, 0644))
 }
 
 func generateTables(outputPath string, tables []string, packageName string) {
 
 	tableStr := ""
 	commentStr := ""
+	const (
+		commentStrEnd = "example end"
+		tablesEnd     = "generators end"
+	)
 
 	for i := 0; i < len(tables); i++ {
 		tableStr += `
@@ -473,8 +478,24 @@ func generateTables(outputPath string, tables []string, packageName string) {
 		commentStr += `// "` + tables[i] + `" => http://localhost:9033/admin/info/` + tables[i] + `
 `
 	}
+	commentStr += `//
+// ` + commentStrEnd + `
+`
+	tableStr += `
 
-	content := `package ` + packageName + `
+	// ` + tablesEnd
+
+	tablesContentByte, err := ioutil.ReadFile(outputPath + "/tables.go")
+	tablesContent := string(tablesContentByte)
+
+	content := ""
+
+	if err == nil && tablesContent != "" && strings.Index(tablesContent, "/") != -1 {
+		tablesContent = strings.Replace(tablesContent, commentStrEnd+`
+//`, commentStr[3:]+"//", -1)
+		content = strings.Replace(tablesContent, "// "+tablesEnd, tableStr, -1)
+	} else {
+		content = `package ` + packageName + `
 
 import "github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
 
@@ -489,8 +510,12 @@ import "github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
 var Generators = map[string]table.Generator{` + tableStr + `
 }
 `
-	err := ioutil.WriteFile(outputPath+"/tables.go", []byte(content), 0644)
+	}
+
+	c, err := format.Source([]byte(content))
+
 	checkError(err)
+	checkError(ioutil.WriteFile(outputPath+"/tables.go", c, 0644))
 }
 
 func getType(typeName string) string {

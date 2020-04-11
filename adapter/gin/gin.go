@@ -17,6 +17,7 @@ import (
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -39,8 +40,8 @@ func (gins *Gin) Use(router interface{}, plugs []plugins.Plugin) error {
 	return gins.GetUse(router, plugs, gins)
 }
 
-func (gins *Gin) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	gins.GetContent(ctx, getPanelFn, gins)
+func (gins *Gin) Content(ctx interface{}, getPanelFn types.GetPanelFn, btns ...types.Button) {
+	gins.GetContent(ctx, getPanelFn, gins, btns)
 }
 
 type HandlerFunc func(ctx *gin.Context) (types.Panel, error)
@@ -65,7 +66,7 @@ func (gins *Gin) SetApp(app interface{}) error {
 	return nil
 }
 
-func (gins *Gin) AddHandler(method, path string, plug plugins.Plugin) {
+func (gins *Gin) AddHandler(method, path string, handlers context.Handlers) {
 	gins.app.Handle(strings.ToUpper(method), path, func(c *gin.Context) {
 		ctx := context.NewContext(c.Request)
 
@@ -77,7 +78,7 @@ func (gins *Gin) AddHandler(method, path string, plug plugins.Plugin) {
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(c.Request.URL.Path, strings.ToLower(c.Request.Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			c.Header(key, head[0])
 		}
@@ -109,7 +110,7 @@ func (gins *Gin) SetContext(contextInterface interface{}) adapter.WebFrameWork {
 }
 
 func (gins *Gin) Redirect() {
-	gins.ctx.Redirect(http.StatusFound, config.Get().Url("/login"))
+	gins.ctx.Redirect(http.StatusFound, config.Url("/login"))
 	gins.ctx.Abort()
 }
 
@@ -133,6 +134,11 @@ func (gins *Gin) Method() string {
 	return gins.ctx.Request.Method
 }
 
-func (gins *Gin) PjaxHeader() string {
-	return gins.ctx.Request.Header.Get(constant.PjaxHeader)
+func (gins *Gin) FormParam() url.Values {
+	_ = gins.ctx.Request.ParseMultipartForm(32 << 20)
+	return gins.ctx.Request.PostForm
+}
+
+func (gins *Gin) IsPjax() bool {
+	return gins.ctx.Request.Header.Get(constant.PjaxHeader) == "true"
 }

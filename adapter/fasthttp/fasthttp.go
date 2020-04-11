@@ -42,8 +42,8 @@ func (fast *Fasthttp) Use(router interface{}, plugs []plugins.Plugin) error {
 	return fast.GetUse(router, plugs, fast)
 }
 
-func (fast *Fasthttp) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	fast.GetContent(ctx, getPanelFn, fast)
+func (fast *Fasthttp) Content(ctx interface{}, getPanelFn types.GetPanelFn, btns ...types.Button) {
+	fast.GetContent(ctx, getPanelFn, fast, btns)
 }
 
 type HandlerFunc func(ctx *fasthttp.RequestCtx) (types.Panel, error)
@@ -69,7 +69,7 @@ func (fast *Fasthttp) SetApp(app interface{}) error {
 	return nil
 }
 
-func (fast *Fasthttp) AddHandler(method, path string, plug plugins.Plugin) {
+func (fast *Fasthttp) AddHandler(method, path string, handlers context.Handlers) {
 	fast.app.Handle(strings.ToUpper(method), path, func(c *fasthttp.RequestCtx) {
 		httpreq := convertCtx(c)
 		ctx := context.NewContext(httpreq)
@@ -89,7 +89,7 @@ func (fast *Fasthttp) AddHandler(method, path string, plug plugins.Plugin) {
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(string(c.Path()), strings.ToLower(string(c.Method())))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			c.Response.Header.Set(key, head[0])
 		}
@@ -172,7 +172,7 @@ func (fast *Fasthttp) SetContext(contextInterface interface{}) adapter.WebFrameW
 }
 
 func (fast *Fasthttp) Redirect() {
-	fast.ctx.Redirect(config.Get().Url("/login"), http.StatusFound)
+	fast.ctx.Redirect(config.Url("/login"), http.StatusFound)
 }
 
 func (fast *Fasthttp) SetContentType() {
@@ -195,6 +195,14 @@ func (fast *Fasthttp) Method() string {
 	return string(fast.ctx.Method())
 }
 
-func (fast *Fasthttp) PjaxHeader() string {
-	return string(fast.ctx.Request.Header.Peek(constant.PjaxHeader))
+func (fast *Fasthttp) FormParam() url.Values {
+	f, _ := fast.ctx.MultipartForm()
+	if f != nil {
+		return f.Value
+	}
+	return url.Values{}
+}
+
+func (fast *Fasthttp) IsPjax() bool {
+	return string(fast.ctx.Request.Header.Peek(constant.PjaxHeader)) == "true"
 }

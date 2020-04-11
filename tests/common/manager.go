@@ -3,6 +3,9 @@ package common
 import (
 	"fmt"
 	"github.com/GoAdminGroup/go-admin/modules/config"
+	"github.com/GoAdminGroup/go-admin/modules/errors"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
 	"github.com/gavv/httpexpect"
 	"net/http"
 )
@@ -16,7 +19,7 @@ func managerTest(e *httpexpect.Expect, sesID *http.Cookie) {
 	// show
 
 	printlnWithColor("show", "green")
-	e.GET(config.Get().Url("/info/manager")).
+	e.GET(config.Url("/info/manager")).
 		WithCookie(sesID.Name, sesID.Value).
 		Expect().
 		Status(200).
@@ -25,7 +28,7 @@ func managerTest(e *httpexpect.Expect, sesID *http.Cookie) {
 	// edit
 
 	printlnWithColor("edit", "green")
-	e.POST(config.Get().Url("/edit/manager")).
+	e.POST(config.Url("/edit/manager")).
 		WithCookie(sesID.Name, sesID.Value).
 		WithMultipart().
 		WithForm(map[string]interface{}{
@@ -35,23 +38,23 @@ func managerTest(e *httpexpect.Expect, sesID *http.Cookie) {
 			"password_again":  "admin",
 			"role_id[]":       1,
 			"permission_id[]": 1,
-			"_previous_":      config.Get().Url("/info/manager?__page=1&__pageSize=10&__sort=id&__sort_type=desc"),
+			form.PreviousKey:  config.Url("/info/manager?__page=1&__pageSize=10&__sort=id&__sort_type=desc"),
 			"id":              "1",
-			"_t":              "123",
-		}).Expect().Status(200).Body().Contains("edit fail, wrong token")
+			form.TokenKey:     "123",
+		}).Expect().Status(200).Body().Contains(errors.EditFailWrongToken)
 
 	// show form: without id
 
 	printlnWithColor("show form: without id", "green")
-	e.GET(config.Get().Url("/info/manager/edit")).
+	e.GET(config.Url("/info/manager/edit")).
 		WithCookie(sesID.Name, sesID.Value).
-		Expect().Status(200).Body().Contains("wrong id")
+		Expect().Status(200).Body().Contains(errors.WrongID)
 
 	// show form
 
 	printlnWithColor("show form", "green")
-	formBody := e.GET(config.Get().Url("/info/manager/edit")).
-		WithQuery("__goadmin_edit_pk", "1").
+	formBody := e.GET(config.Url("/info/manager/edit")).
+		WithQuery(constant.EditPKKey, "1").
 		WithCookie(sesID.Name, sesID.Value).
 		Expect().Status(200).Body()
 
@@ -60,28 +63,28 @@ func managerTest(e *httpexpect.Expect, sesID *http.Cookie) {
 	// edit form
 
 	printlnWithColor("edit form", "green")
-	res := e.POST(config.Get().Url("/edit/manager")).
+	res := e.POST(config.Url("/edit/manager")).
 		WithCookie(sesID.Name, sesID.Value).
 		WithMultipart().
 		WithForm(map[string]interface{}{
-			"username":        "admin",
-			"name":            "admin1",
-			"password":        "admin",
-			"password_again":  "admin",
-			"avatar":          "",
-			"role_id[]":       1,
-			"permission_id[]": 1,
-			"_previous_":      config.Get().Url("/info/manager?__page=1&__pageSize=10&__sort=id&__sort_type=desc"),
-			"id":              "1",
-			"_t":              token[1],
+			"username":            "admin",
+			"name":                "admin1",
+			"password":            "admin",
+			"password_again":      "admin",
+			"avatar__delete_flag": "0",
+			"role_id[]":           1,
+			"permission_id[]":     1,
+			form.PreviousKey:      config.Url("/info/manager?__page=1&__pageSize=10&__sort=id&__sort_type=desc"),
+			"id":                  "1",
+			form.TokenKey:         token[1],
 		}).Expect().Status(200)
-	res.Header("X-Pjax-Url").Contains(config.Get().Url("/info/"))
+	res.Header("X-Pjax-Url").Contains(config.Url("/info/"))
 	res.Body().Contains("admin1")
 
 	// show new form
 
 	printlnWithColor("show new form", "green")
-	formBody = e.GET(config.Get().Url("/info/manager/new")).
+	formBody = e.GET(config.Url("/info/manager/new")).
 		WithCookie(sesID.Name, sesID.Value).
 		Expect().Status(200).Body()
 
@@ -89,29 +92,29 @@ func managerTest(e *httpexpect.Expect, sesID *http.Cookie) {
 
 	// new manager tester
 
-	printlnWithColor("new manager tester", "green")
-	res = e.POST(config.Get().Url("/new/manager")).
+	printlnWithColor("new manager test", "green")
+	res = e.POST(config.Url("/new/manager")).
 		WithCookie(sesID.Name, sesID.Value).
 		WithMultipart().
 		WithForm(map[string]interface{}{
-			"username":        "tester",
-			"name":            "tester",
-			"password":        "tester",
-			"password_again":  "tester",
-			"avatar":          "",
-			"role_id[]":       1,
-			"permission_id[]": 1,
-			"_previous_":      config.Get().Url("/info/manager?__page=1&__pageSize=10&__sort=id&__sort_type=desc"),
-			"id":              "1",
-			"_t":              token[1],
+			"username":            "tester",
+			"name":                "tester",
+			"password":            "tester",
+			"password_again":      "tester",
+			"avatar__delete_flag": "0",
+			"role_id[]":           1,
+			"permission_id[]":     1,
+			form.PreviousKey:      config.Url("/info/manager?__page=1&__pageSize=10&__sort=id&__sort_type=desc"),
+			"id":                  "1",
+			form.TokenKey:         token[1],
 		}).Expect().Status(200)
-	res.Header("X-Pjax-Url").Contains(config.Get().Url("/info/"))
+	res.Header("X-Pjax-Url").Contains(config.Url("/info/"))
 	res.Body().Contains("tester")
 
 	// tester login: wrong password
 
 	printlnWithColor("tester login: wrong password", "green")
-	e.POST(config.Get().Url("/signin")).WithForm(map[string]string{
+	e.POST(config.Url("/signin")).WithForm(map[string]string{
 		"username": "tester",
 		"password": "admin",
 	}).Expect().Status(400)
@@ -119,13 +122,13 @@ func managerTest(e *httpexpect.Expect, sesID *http.Cookie) {
 	// tester login success
 
 	printlnWithColor("tester login success", "green")
-	e.POST(config.Get().Url("/signin")).WithForm(map[string]string{
+	e.POST(config.Url("/signin")).WithForm(map[string]string{
 		"username": "tester",
 		"password": "tester",
 	}).Expect().Status(200).JSON().Equal(map[string]interface{}{
 		"code": 200,
 		"data": map[string]interface{}{
-			"url": "/" + config.Get().UrlPrefix,
+			"url": "/" + config.GetUrlPrefix(),
 		},
 		"msg": "ok",
 	})

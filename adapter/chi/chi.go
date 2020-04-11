@@ -17,6 +17,7 @@ import (
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/go-chi/chi"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -40,8 +41,8 @@ func (ch *Chi) Use(router interface{}, plugs []plugins.Plugin) error {
 	return ch.GetUse(router, plugs, ch)
 }
 
-func (ch *Chi) Content(ctx interface{}, getPanelFn types.GetPanelFn) {
-	ch.GetContent(ctx, getPanelFn, ch)
+func (ch *Chi) Content(ctx interface{}, getPanelFn types.GetPanelFn, btns ...types.Button) {
+	ch.GetContent(ctx, getPanelFn, ch, btns)
 }
 
 type HandlerFunc func(ctx Context) (types.Panel, error)
@@ -70,7 +71,7 @@ func (ch *Chi) SetApp(app interface{}) error {
 	return nil
 }
 
-func (ch *Chi) AddHandler(method, path string, plug plugins.Plugin) {
+func (ch *Chi) AddHandler(method, path string, handlers context.Handlers) {
 	url := path
 	reg1 := regexp.MustCompile(":(.*?)/")
 	reg2 := regexp.MustCompile(":(.*?)$")
@@ -99,7 +100,7 @@ func (ch *Chi) AddHandler(method, path string, plug plugins.Plugin) {
 			}
 		}
 
-		ctx.SetHandlers(plug.GetHandler(r.URL.Path, strings.ToLower(r.Method))).Next()
+		ctx.SetHandlers(handlers).Next()
 		for key, head := range ctx.Response.Header {
 			w.Header().Set(key, head[0])
 		}
@@ -160,7 +161,7 @@ func (ch *Chi) Name() string {
 }
 
 func (ch *Chi) Redirect() {
-	http.Redirect(ch.ctx.Response, ch.ctx.Request, cfg.Get().Url("/login"), http.StatusFound)
+	http.Redirect(ch.ctx.Response, ch.ctx.Request, cfg.Url("/login"), http.StatusFound)
 }
 
 func (ch *Chi) SetContentType() {
@@ -188,6 +189,11 @@ func (ch *Chi) Method() string {
 	return ch.ctx.Request.Method
 }
 
-func (ch *Chi) PjaxHeader() string {
-	return ch.ctx.Request.Header.Get(constant.PjaxHeader)
+func (ch *Chi) FormParam() url.Values {
+	_ = ch.ctx.Request.ParseMultipartForm(32 << 20)
+	return ch.ctx.Request.PostForm
+}
+
+func (ch *Chi) IsPjax() bool {
+	return ch.ctx.Request.Header.Get(constant.PjaxHeader) == "true"
 }

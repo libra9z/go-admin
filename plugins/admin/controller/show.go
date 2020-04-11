@@ -3,89 +3,104 @@ package controller
 import (
 	"bytes"
 	"fmt"
+	template2 "html/template"
+	"mime"
+	"net/http"
+	"net/url"
+	"path"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/360EntSecGroup-Skylar/excelize"
 	"github.com/GoAdminGroup/go-admin/context"
 	"github.com/GoAdminGroup/go-admin/modules/auth"
+	"github.com/GoAdminGroup/go-admin/modules/errors"
 	"github.com/GoAdminGroup/go-admin/modules/language"
 	"github.com/GoAdminGroup/go-admin/modules/logger"
-	"github.com/GoAdminGroup/go-admin/modules/menu"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
+	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/form"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/guard"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/parameter"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/response"
 	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/table"
 	"github.com/GoAdminGroup/go-admin/template"
+	"github.com/GoAdminGroup/go-admin/template/icon"
 	"github.com/GoAdminGroup/go-admin/template/types"
 	"github.com/GoAdminGroup/go-admin/template/types/action"
-	template2 "html/template"
-	"net/http"
-	"path"
-	"strconv"
-	"strings"
-	"time"
+	"github.com/GoAdminGroup/html"
 )
 
 // ShowInfo show info page.
-func ShowInfo(ctx *context.Context) {
+func (h *Handler) ShowInfo(ctx *context.Context) {
 
-	prefix := ctx.Query("__prefix")
-	panel := table.Get(prefix)
+	prefix := ctx.Query(constant.PrefixKey)
 
-	params := parameter.GetParam(ctx.Request.URL.Query(), panel.GetInfo().DefaultPageSize, panel.GetPrimaryKey().Name,
+	if prefix == "site" {
+		ctx.Redirect(h.config.Url("/info/site/edit"))
+		return
+	}
+
+	panel := h.table(prefix, ctx)
+
+	params := parameter.GetParam(ctx.Request.URL, panel.GetInfo().DefaultPageSize, panel.GetInfo().SortField,
 		panel.GetInfo().GetSort())
 
-	user := auth.Auth(ctx)
-	user.HasMenu()
-
-	editUrl := modules.AorB(panel.GetEditable(), config.Url("/info/"+prefix+"/edit"+params.GetRouteParamStr()), "")
-	deleteUrl := modules.AorB(panel.GetDeletable(), config.Url("/delete/"+prefix), "")
-	exportUrl := modules.AorB(panel.GetExportable(), config.Url("/export/"+prefix+params.GetRouteParamStr()), "")
-	detailUrl := modules.AorB(panel.IsShowDetail(), config.Url("/info/"+prefix+"/detail"+params.GetRouteParamStr()), "")
-	newUrl := modules.AorB(panel.GetCanAdd(), config.Url("/info/"+prefix+"/new"+params.GetRouteParamStr()), "")
-
-	if !user.CheckPermissionByUrlMethod(editUrl, "GET") {
-		editUrl = ""
-	}
-	if !user.CheckPermissionByUrlMethod(deleteUrl, "POST") {
-		deleteUrl = ""
-	}
-	if !user.CheckPermissionByUrlMethod(exportUrl, "POST") {
-		exportUrl = ""
-	}
-	if !user.CheckPermissionByUrlMethod(detailUrl, "GET") {
-		detailUrl = ""
-	}
-	if !user.CheckPermissionByUrlMethod(newUrl, "GET") {
-		newUrl = ""
-	}
-
-	infoUrl := config.Url("/info/" + prefix)
-	updateUrl := config.Url("/update/" + prefix)
-
-	buf := showTable(ctx, panel, ctx.Path(), params, exportUrl, newUrl, deleteUrl, infoUrl, editUrl, updateUrl, detailUrl)
+	buf := h.showTable(ctx, prefix, params, panel)
 	ctx.HTML(http.StatusOK, buf.String())
 }
 
-func showTable(ctx *context.Context, panel table.Table, path string, params parameter.Parameters,
-	exportUrl, newUrl, deleteUrl, infoUrl, editUrl, updateUrl, detailUrl string) *bytes.Buffer {
+func (h *Handler) showTableData(ctx *context.Context, prefix string, params parameter.Parameters,
+	panel table.Table, urlNamePrefix string) (table.Table, table.PanelInfo, []string, error) {
+	if panel == nil {
+		panel = h.table(prefix, ctx)
+	}
 
-	table.InitTableList()
-
-	panelInfo, err := panel.GetDataFromDatabase(path, params, false)
+	panelInfo, err := panel.GetData(params.WithIsAll(false))
 
 	if err != nil {
-		tmpl, tmplName := aTemplate().GetTemplate(isPjax(ctx))
-		user := auth.Auth(ctx)
-		alert := aAlert().SetTitle(template2.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-			SetTheme("warning").
-			SetContent(template2.HTML(err.Error())).
-			GetContent()
-		return template.Execute(tmpl, tmplName, user, types.Panel{
-			Content:     alert,
-			Description: language.Get("error"),
-			Title:       language.Get("error"),
-		}, config, menu.GetGlobalMenu(user, conn).SetActiveClass(config.URLRemovePrefix(ctx.Path())))
+		return panel, panelInfo, nil, err
 	}
+
+	paramStr := params.DeleteIsAll().GetRouteParamStr()
+
+	editUrl := modules.AorEmpty(!panel.GetInfo().IsHideEditButton, h.routePathWithPrefix(urlNamePrefix+"show_edit", prefix)+paramStr)
+	newUrl := modules.AorEmpty(!panel.GetInfo().IsHideNewButton, h.routePathWithPrefix(urlNamePrefix+"show_new", prefix)+paramStr)
+	deleteUrl := modules.AorEmpty(!panel.GetInfo().IsHideDeleteButton, h.routePathWithPrefix(urlNamePrefix+"delete", prefix))
+	exportUrl := modules.AorEmpty(!panel.GetInfo().IsHideExportButton, h.routePathWithPrefix(urlNamePrefix+"export", prefix)+paramStr)
+	detailUrl := modules.AorEmpty(!panel.GetInfo().IsHideDetailButton, h.routePathWithPrefix(urlNamePrefix+"detail", prefix)+paramStr)
+
+	infoUrl := h.routePathWithPrefix(urlNamePrefix+"info", prefix)
+	updateUrl := h.routePathWithPrefix(urlNamePrefix+"update", prefix)
+
+	user := auth.Auth(ctx)
+
+	editUrl = user.GetCheckPermissionByUrlMethod(editUrl, h.route(urlNamePrefix+"show_edit").Method())
+	newUrl = user.GetCheckPermissionByUrlMethod(newUrl, h.route(urlNamePrefix+"show_new").Method())
+	deleteUrl = user.GetCheckPermissionByUrlMethod(deleteUrl, h.route(urlNamePrefix+"delete").Method())
+	exportUrl = user.GetCheckPermissionByUrlMethod(exportUrl, h.route(urlNamePrefix+"export").Method())
+	detailUrl = user.GetCheckPermissionByUrlMethod(detailUrl, h.route(urlNamePrefix+"detail").Method())
+
+	return panel, panelInfo, []string{editUrl, newUrl, deleteUrl, exportUrl, detailUrl, infoUrl, updateUrl}, nil
+}
+
+func (h *Handler) showTable(ctx *context.Context, prefix string, params parameter.Parameters, panel table.Table) *bytes.Buffer {
+
+	panel, panelInfo, urls, err := h.showTableData(ctx, prefix, params, panel, "")
+	if err != nil {
+		return h.Execute(ctx, auth.Auth(ctx), types.Panel{
+			Content: aAlert().SetTitle(errors.MsgWithIcon).
+				SetTheme("warning").
+				SetContent(template2.HTML(err.Error())).
+				GetContent(),
+			Description: errors.Msg,
+			Title:       errors.Msg,
+		}, params.Animation)
+	}
+	editUrl, newUrl, deleteUrl, exportUrl, detailUrl, infoUrl,
+		updateUrl := urls[0], urls[1], urls[2], urls[3], urls[4], urls[5], urls[6]
+	user := auth.Auth(ctx)
 
 	var (
 		body       template2.HTML
@@ -93,37 +108,61 @@ func showTable(ctx *context.Context, panel table.Table, path string, params para
 		info       = panel.GetInfo()
 		actionBtns = info.Action
 		actionJs   template2.JS
+		allBtns    = make(types.Buttons, 0)
 	)
 
-	btns, btnsJs := info.Buttons.Content()
+	for _, b := range info.Buttons {
+		if b.URL() == "" || b.METHOD() == "" || user.CheckPermissionByUrlMethod(b.URL(), b.METHOD(), url.Values{}) {
+			allBtns = append(allBtns, b)
+		}
+	}
 
-	if actionBtns == template.HTML("") && len(info.ActionButtons) > 0 {
+	btns, btnsJs := allBtns.Content()
+
+	allActionBtns := make(types.Buttons, 0)
+
+	for _, b := range info.ActionButtons {
+		if b.URL() == "" || b.METHOD() == "" || user.CheckPermissionByUrlMethod(b.URL(), b.METHOD(), url.Values{}) {
+			allActionBtns = append(allActionBtns, b)
+		}
+	}
+
+	if actionBtns == template.HTML("") && len(allActionBtns) > 0 {
+
 		ext := template.HTML("")
 		if deleteUrl != "" {
-			ext = template.HTML(`<li class="divider"></li>`)
-			info.AddActionButtonFront(language.GetFromHtml("delete"), types.NewDefaultAction(`data-id='{%id}' style="cursor: pointer;"`,
-				ext, ""), "grid-row-delete")
+			ext = html.LiEl().SetClass("divider").Get()
+			allActionBtns = append([]types.Button{types.GetActionButton(language.GetFromHtml("delete"),
+				types.NewDefaultAction(`data-id='{{.Id}}' style="cursor: pointer;"`,
+					ext, "", ""), "grid-row-delete")}, allActionBtns...)
 		}
 		ext = template.HTML("")
 		if detailUrl != "" {
 			if editUrl == "" && deleteUrl == "" {
-				ext = template.HTML(`<li class="divider"></li>`)
+				ext = html.LiEl().SetClass("divider").Get()
 			}
-			info.AddActionButtonFront(language.GetFromHtml("detail"), action.Jump(detailUrl+"&__goadmin_detail_pk={%id}", ext))
+			allActionBtns = append([]types.Button{types.GetActionButton(language.GetFromHtml("detail"),
+				action.Jump(detailUrl+"&"+constant.DetailPKKey+"={{.Id}}", ext))}, allActionBtns...)
 		}
 		if editUrl != "" {
 			if detailUrl == "" && deleteUrl == "" {
-				ext = template.HTML(`<li class="divider"></li>`)
+				ext = html.LiEl().SetClass("divider").Get()
 			}
-			info.AddActionButtonFront(language.GetFromHtml("edit"), action.Jump(editUrl+"&__goadmin_edit_pk={%id}", ext))
+			allActionBtns = append([]types.Button{types.GetActionButton(language.GetFromHtml("edit"),
+				action.Jump(editUrl+"&"+constant.EditPKKey+"={{.Id}}", ext))}, allActionBtns...)
 		}
 
 		var content template2.HTML
-		content, actionJs = info.ActionButtons.Content()
+		content, actionJs = allActionBtns.Content()
 
-		actionBtns = template.HTML(`<div class="dropdown" style="text-align: center;"><a href="#" class="dropdown-toggle" 
-		data-toggle="dropdown" style="color: #676565;"><i class="fa fa-ellipsis-v"></i></a><ul class="dropdown-menu" role="menu" 
-		aria-labelledby="dLabel" style="min-width: 20px !important;left: -32px;overflow: hidden;">`) + content + template.HTML(`</ul></div>`)
+		actionBtns = html.Div(
+			html.A(icon.Icon(icon.EllipsisV),
+				html.M{"color": "#676565"},
+				html.M{"class": "dropdown-toggle", "href": "#", "data-toggle": "dropdown"},
+			)+html.Ul(content,
+				html.M{"min-width": "20px !important", "left": "-32px", "overflow": "hidden"},
+				html.M{"class": "dropdown-menu", "role": "menu", "aria-labelledby": "dLabel"}),
+			html.M{"text-align": "center"}, html.M{"class": "dropdown"})
 	}
 
 	if info.TabGroups.Valid() {
@@ -147,12 +186,13 @@ func showTable(ctx *context.Context, panel table.Table, path string, params para
 					SetInfoUrl(infoUrl).
 					SetButtons(btns).
 					SetActionJs(btnsJs + actionJs).
-					SetHasFilter(len(panelInfo.FormData) > 0).
+					SetHasFilter(len(panelInfo.FilterFormData) > 0).
 					SetAction(actionBtns).
 					SetIsTab(key != 0).
 					SetPrimaryKey(panel.GetPrimaryKey().Name).
 					SetThead(theadArr[key]).
 					SetHideRowSelector(info.IsHideRowSelector).
+					SetLayout(info.TableLayout).
 					SetExportUrl(exportUrl).
 					SetNewUrl(newUrl).
 					SetEditUrl(editUrl).
@@ -168,9 +208,10 @@ func showTable(ctx *context.Context, panel table.Table, path string, params para
 			SetInfoList(panelInfo.InfoList).
 			SetInfoUrl(infoUrl).
 			SetButtons(btns).
+			SetLayout(info.TableLayout).
 			SetActionJs(btnsJs + actionJs).
 			SetAction(actionBtns).
-			SetHasFilter(len(panelInfo.FormData) > 0).
+			SetHasFilter(len(panelInfo.FilterFormData) > 0).
 			SetPrimaryKey(panel.GetPrimaryKey().Name).
 			SetThead(panelInfo.Thead).
 			SetExportUrl(exportUrl).
@@ -189,36 +230,36 @@ func showTable(ctx *context.Context, panel table.Table, path string, params para
 		SetNoPadding().
 		SetHeader(dataTable.GetDataTableHeader() + info.HeaderHtml).
 		WithHeadBorder().
-		SetFooter(panelInfo.Paginator.GetContent())
+		SetFooter(panelInfo.Paginator.GetContent() + info.FooterHtml)
 
-	if len(panelInfo.FormData) > 0 {
+	if len(panelInfo.FilterFormData) > 0 {
 		boxModel = boxModel.SetSecondHeaderClass("filter-area").
 			SetSecondHeader(aForm().
-				SetContent(panelInfo.FormData).
-				SetPrefix(config.PrefixFixSlash()).
+				SetContent(panelInfo.FilterFormData).
+				SetPrefix(h.config.PrefixFixSlash()).
+				SetInputWidth(10).
 				SetMethod("get").
 				SetLayout(info.FilterFormLayout).
 				SetUrl(infoUrl).
+				SetHiddenFields(map[string]string{
+					form.NoAnimationKey: "true",
+				}).
 				SetOperationFooter(filterFormFooter(infoUrl)).
 				GetContent())
 	}
 
 	box := boxModel.GetContent()
 
-	user := auth.Auth(ctx)
-
-	tmpl, tmplName := aTemplate().GetTemplate(isPjax(ctx))
-
-	return template.Execute(tmpl, tmplName, user, types.Panel{
+	return h.Execute(ctx, user, types.Panel{
 		Content:     box,
 		Description: panelInfo.Description,
 		Title:       panelInfo.Title,
-	}, config, menu.GetGlobalMenu(user, conn).SetActiveClass(config.URLRemovePrefix(ctx.Path())))
+	}, params.Animation)
 }
 
 // Assets return front-end assets according the request path.
-func Assets(ctx *context.Context) {
-	filepath := config.URLRemovePrefix(ctx.Path())
+func (h *Handler) Assets(ctx *context.Context) {
+	filepath := h.config.URLRemovePrefix(ctx.Path())
 	data, err := aTemplate().GetAsset(filepath)
 
 	if err != nil {
@@ -230,14 +271,10 @@ func Assets(ctx *context.Context) {
 		}
 	}
 
-	fileSuffix := path.Ext(filepath)
-	fileSuffix = strings.Replace(fileSuffix, ".", "", -1)
+	var contentType = mime.TypeByExtension(path.Ext(filepath))
 
-	var contentType string
-	if fileSuffix == "css" || fileSuffix == "js" {
-		contentType = "text/" + fileSuffix + "; charset=utf-8"
-	} else {
-		contentType = "image/" + fileSuffix
+	if contentType == "" {
+		contentType = "application/octet-stream"
 	}
 
 	ctx.Write(http.StatusOK, map[string]string{
@@ -246,12 +283,12 @@ func Assets(ctx *context.Context) {
 }
 
 // Export export table rows as excel object.
-func Export(ctx *context.Context) {
+func (h *Handler) Export(ctx *context.Context) {
 	param := guard.GetExportParam(ctx)
 
 	tableName := "Sheet1"
-	prefix := ctx.Query("__prefix")
-	panel := table.Get(prefix)
+	prefix := ctx.Query(constant.PrefixKey)
+	panel := h.table(prefix, ctx)
 
 	f := excelize.NewFile()
 	index := f.NewSheet(tableName)
@@ -262,21 +299,22 @@ func Export(ctx *context.Context) {
 		"L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"}
 
 	var (
-		panelInfo table.PanelInfo
+		infoData  table.PanelInfo
 		fileName  string
 		err       error
+		tableInfo = panel.GetInfo()
 	)
 
-	if len(param.Id) == 1 {
-		params := parameter.GetParam(ctx.Request.URL.Query(), panel.GetInfo().DefaultPageSize, panel.GetPrimaryKey().Name,
-			panel.GetInfo().GetSort())
-		panelInfo, err = panel.GetDataFromDatabase(ctx.Path(), params, param.IsAll)
-		fileName = fmt.Sprintf("%s-%d-page-%s-pageSize-%s.xlsx", panel.GetInfo().Title, time.Now().Unix(),
+	if len(param.Id) == 0 {
+		params := parameter.GetParam(ctx.Request.URL, tableInfo.DefaultPageSize, tableInfo.SortField,
+			tableInfo.GetSort())
+		infoData, err = panel.GetData(params.WithIsAll(param.IsAll))
+		fileName = fmt.Sprintf("%s-%d-page-%s-pageSize-%s.xlsx", tableInfo.Title, time.Now().Unix(),
 			params.Page, params.PageSize)
 	} else {
-		panelInfo, err = panel.GetDataFromDatabaseWithIds(ctx.Path(), parameter.GetParam(ctx.Request.URL.Query(),
-			panel.GetInfo().DefaultPageSize, panel.GetPrimaryKey().Name, panel.GetInfo().GetSort()), param.Id)
-		fileName = fmt.Sprintf("%s-%d-id-%s.xlsx", panel.GetInfo().Title, time.Now().Unix(), strings.Join(param.Id, "_"))
+		infoData, err = panel.GetDataWithIds(parameter.GetParam(ctx.Request.URL,
+			tableInfo.DefaultPageSize, tableInfo.SortField, tableInfo.GetSort()).WithPKs(param.Id...))
+		fileName = fmt.Sprintf("%s-%d-id-%s.xlsx", tableInfo.Title, time.Now().Unix(), strings.Join(param.Id, "_"))
 	}
 
 	if err != nil {
@@ -284,14 +322,26 @@ func Export(ctx *context.Context) {
 		return
 	}
 
-	for key, head := range panelInfo.Thead {
-		f.SetCellValue(tableName, orders[key]+"1", head["head"])
+	columnIndex := 0
+	for _, head := range infoData.Thead {
+		if !head.Hide {
+			f.SetCellValue(tableName, orders[columnIndex]+"1", head.Head)
+			columnIndex++
+		}
 	}
 
 	count := 2
-	for _, info := range panelInfo.InfoList {
-		for key, head := range panelInfo.Thead {
-			f.SetCellValue(tableName, orders[key]+strconv.Itoa(count), info[head["field"]])
+	for _, info := range infoData.InfoList {
+		columnIndex = 0
+		for _, head := range infoData.Thead {
+			if !head.Hide {
+				if tableInfo.IsExportValue() {
+					f.SetCellValue(tableName, orders[columnIndex]+strconv.Itoa(count), info[head.Field].Value)
+				} else {
+					f.SetCellValue(tableName, orders[columnIndex]+strconv.Itoa(count), info[head.Field].Content)
+				}
+				columnIndex++
+			}
 		}
 		count++
 	}

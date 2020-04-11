@@ -5,25 +5,24 @@ import (
 	"github.com/GoAdminGroup/go-admin/modules/auth"
 	"github.com/GoAdminGroup/go-admin/modules/config"
 	"github.com/GoAdminGroup/go-admin/modules/db"
+	"github.com/GoAdminGroup/go-admin/modules/errors"
 	"github.com/GoAdminGroup/go-admin/modules/language"
 	"github.com/GoAdminGroup/go-admin/modules/menu"
-	"github.com/GoAdminGroup/go-admin/plugins/admin/modules/constant"
 	"github.com/GoAdminGroup/go-admin/template"
 	"github.com/GoAdminGroup/go-admin/template/types"
-	template2 "html/template"
 	"net/http"
 )
 
 func Ok(ctx *context.Context) {
 	ctx.JSON(http.StatusOK, map[string]interface{}{
-		"code": 200,
+		"code": http.StatusOK,
 		"msg":  "ok",
 	})
 }
 
 func OkWithData(ctx *context.Context, data map[string]interface{}) {
 	ctx.JSON(http.StatusOK, map[string]interface{}{
-		"code": 200,
+		"code": http.StatusOK,
 		"msg":  "ok",
 		"data": data,
 	})
@@ -31,32 +30,55 @@ func OkWithData(ctx *context.Context, data map[string]interface{}) {
 
 func BadRequest(ctx *context.Context, msg string) {
 	ctx.JSON(http.StatusBadRequest, map[string]interface{}{
-		"code": 400,
+		"code": http.StatusBadRequest,
 		"msg":  language.Get(msg),
 	})
 }
 
-func Alert(ctx *context.Context, config config.Config, desc, title, msg string, conn db.Connection) {
+func Alert(ctx *context.Context, desc, title, msg string, conn db.Connection) {
 	user := auth.Auth(ctx)
 
-	alert := template.Get(config.Theme).Alert().
-		SetTitle(template2.HTML(`<i class="icon fa fa-warning"></i> ` + language.Get("error") + `!`)).
-		SetTheme("warning").
-		SetContent(template2.HTML(msg)).
-		GetContent()
-
-	tmpl, tmplName := template.Get(config.Theme).GetTemplate(ctx.Headers(constant.PjaxHeader) == "true")
-	buf := template.Execute(tmpl, tmplName, user, types.Panel{
-		Content:     alert,
-		Description: desc,
-		Title:       title,
-	}, config, menu.GetGlobalMenu(user, conn).SetActiveClass(config.URLRemovePrefix(ctx.Path())))
+	tmpl, tmplName := template.Get(config.GetTheme()).GetTemplate(ctx.IsPjax())
+	buf := template.Execute(template.ExecuteParam{
+		User:     user,
+		TmplName: tmplName,
+		Tmpl:     tmpl,
+		Panel: types.Panel{
+			Content:     template.Get(config.GetTheme()).Alert().Warning(msg),
+			Description: desc,
+			Title:       title,
+		},
+		Config:    config.Get(),
+		Menu:      menu.GetGlobalMenu(user, conn).SetActiveClass(config.URLRemovePrefix(ctx.Path())),
+		Animation: true,
+	})
 	ctx.HTML(http.StatusOK, buf.String())
 }
 
 func Error(ctx *context.Context, msg string) {
 	ctx.JSON(http.StatusInternalServerError, map[string]interface{}{
-		"code": 500,
+		"code": http.StatusInternalServerError,
 		"msg":  language.Get(msg),
 	})
+}
+
+func Denied(ctx *context.Context, msg string) {
+	ctx.JSON(http.StatusInternalServerError, map[string]interface{}{
+		"code": http.StatusForbidden,
+		"msg":  language.Get(msg),
+	})
+}
+
+var OffLineHandler = func(ctx *context.Context) {
+	if config.GetSiteOff() {
+		if ctx.WantHTML() {
+			ctx.HTML(http.StatusOK, `<html><body><h1>The website is offline</h1></body></html>`)
+		} else {
+			ctx.JSON(http.StatusForbidden, map[string]interface{}{
+				"code": http.StatusForbidden,
+				"msg":  language.Get(errors.SiteOff),
+			})
+		}
+		ctx.Abort()
+	}
 }
